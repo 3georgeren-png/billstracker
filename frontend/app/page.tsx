@@ -404,8 +404,8 @@ export default function Dashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={monthlyData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis dataKey="month" stroke="#94a3b8" fontSize={9} sm={{ fontSize: 11 }} tick={{ fill: '#94a3b8' }} />
-                  <YAxis stroke="#94a3b8" fontSize={9} sm={{ fontSize: 11 }} tick={{ fill: '#94a3b8' }} tickFormatter={(value) => `£${value}`} />
+                  <XAxis dataKey="month" stroke="#94a3b8" fontSize={11} tick={{ fill: '#94a3b8' }} />
+                 <YAxis stroke="#94a3b8" fontSize={11} tick={{ fill: '#94a3b8' }} tickFormatter={(value) => `£${value}`} />
                   <Tooltip 
                     contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#f1f5f9', fontSize: '12px' }}
                     formatter={(value: number) => [`£${value.toFixed(2)}`, 'Spent']}
@@ -556,7 +556,7 @@ export default function Dashboard() {
                               const lastSent = localStorage.getItem('bt_last_sms_date');
                               const today = new Date().toISOString().split('T')[0];
                               if (lastSent === today) {
-                                toast('📱 SMS already sent today (1 per day limit)', 'warning');
+                                toast('📱 SMS already sent today (1 per day limit)', 'error');
                                 return;
                               }
                               const daysLeft = daysUntil(bill.next_bill_date);

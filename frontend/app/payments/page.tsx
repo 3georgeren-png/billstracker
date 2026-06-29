@@ -215,14 +215,17 @@ export default function Payments() {
       } else {
         const bill = bills.find(b => b.biller_id === editing.biller_id);
         if (bill) {
-          const result = await recordSmartPayment({
-            bill: bill as any,
-            billerId: editing.biller_id as string,
-            amount: editing.amount || 0,
-            paymentDate: editing.payment_date || new Date().toISOString().split('T')[0],
-            method: editing.method || 'Bank Transfer',
-            notes: editing.notes,
-          });
+  const result = await recordSmartPayment({
+    billId: bill.id,
+    billerId: editing.biller_id as string,
+    amount: editing.amount || 0,
+    paymentDate: editing.payment_date || new Date().toISOString().split('T')[0],
+    method: editing.method || 'Bank Transfer',
+    notes: editing.notes,
+    currentBalance: bill.current_balance || 0,
+    frequency: bill.frequency || 'monthly',
+    nextBillDate: bill.next_bill_date,
+  });
           if (receiptFile && result.success) {
             const lastPayment = await pb.collection('payments').getList(1, 1, {
               filter: `biller_id="${editing.biller_id}"`,

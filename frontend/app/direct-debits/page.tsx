@@ -139,7 +139,7 @@ export default function DirectDebits() {
   const totalMonthly = active.reduce((s, d) => s + (d.amount || 0), 0);
   const pausedCount = dds.filter(d => d.status === 'paused').length;
   const cancelledCount = dds.filter(d => d.status === 'cancelled').length;
-  const hasActiveFilters = searchQuery || filterStatus !== 'all' || filterBiller !== 'all';
+  const hasActiveFilters = Boolean(searchQuery || filterStatus !== 'all' || filterBiller !== 'all');
 
   const statusColor: Record<string, string> = { 
     active: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', 
