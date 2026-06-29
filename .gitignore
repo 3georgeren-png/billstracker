@@ -1,44 +1,7 @@
 node_modules/
 .next/
-dist/
-build/
-.env.local
-.env.production
+out/
+.DS_Store
 *.log
-.DS_Store
-coverage/
-.vercel/
-*.swp
-*.swo
-
-# macOS
-.DS_Store
+# macOS metadata
 ._*
-.AppleDouble
-.LSOverride
-
-pocketbase/pocketbase_*/pb_data/
-pocketbase/pocketbase_*/pocketbase
-
-# Environment files
-.env
-.env.local
-.env.*.local
-.env.save*
-
-# Backups
-*.backup
-*.backup.ts
-*.save*
-*~
-*.swp
-
-# Database files
-*.db
-*.db-shm
-*.db-wal
-
-# Project specific
-frontend/.env.save*
-frontend/.env.localy
-
