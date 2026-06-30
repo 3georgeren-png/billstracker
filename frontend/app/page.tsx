@@ -1,6 +1,11 @@
 'use client';
 import { useEffect, useState } from 'react';
-import pb, { Biller, Bill, Payment, DirectDebit, Reminder } from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
+import { getBillers, type Biller } from '@/lib/services/billers';
+import { getBills, type Bill } from '@/lib/services/bills';
+import { getPayments, type Payment } from '@/lib/services/payments';
+import { getReminders, type Reminder } from '@/lib/services/reminders';
+import { getDirectDebits, type DirectDebit } from '@/lib/services/directDebits';
 import { useNotifications } from '@/hooks/useNotifications';
 import { recordSmartPayment, FREQUENCY_LABELS } from '@/lib/smartPayment';
 import { useBudget } from '@/hooks/useBudget';
@@ -43,7 +48,8 @@ function daysUntil(dateStr: string) {
 
 function getReceiptUrl(payment: Payment) {
   if (!payment.receipt) return null;
-  return `http://${window.location.hostname}:8090/api/files/payments/${payment.id}/${payment.receipt}`;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  return `${supabaseUrl}/storage/v1/object/public/receipts/${payment.id}/${payment.receipt}`;
 }
 
 function ReceiptPreview({ payment, onClose }: { payment: Payment; onClose: () => void }) {
@@ -124,70 +130,107 @@ export default function Dashboard() {
     notifyPaymentRecorded
   } = useAppNotifications();
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      try {
-        const [b, bi, p, d, r] = await Promise.all([
-          pb.collection('billers').getFullList<Biller>({ sort: 'name' }),
-          pb.collection('bills').getFullList<Bill>({ 
-            expand: 'biller_id',
-            sort: '-updated' 
-          }),
-          pb.collection('payments').getFullList<Payment>({ expand: 'biller_id', sort: '-payment_date' }),
-          pb.collection('direct_debits').getFullList<DirectDebit>({ expand: 'biller_id', filter: 'status="active"' }),
-          pb.collection('reminders').getFullList<Reminder>({ expand: 'biller_id', filter: 'status="pending"', sort: 'reminder_date' }),
-        ]);
-        
-        setBillers(b); 
-        setBills(bi); 
-        setPayments(p); 
-        setDDs(d); 
-        setReminders(r);
-        
-        await loadBudgets();
-        
-        if (permission === 'granted') {
-          checkUpcomingBills(bi, daysUntil);
-        }
-        
-        await checkAndNotify(r);
-
-        // ── Auto-SMS Check ──
-        const phone = localStorage.getItem('bt_phone_number');
-        if (phone && bi.length > 0) {
-          setTimeout(async () => {
-            const result = await checkAndSendAutoSms(bi, daysUntil);
-            if (result.sent) {
-              toast('📱 SMS reminder sent automatically!');
-            }
-          }, 2000);
-        }
-
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
+  // Load function
+  async function load() {
+    setLoading(true);
+    try {
+      const [b, bi, p, d, r] = await Promise.all([
+        getBillers(),
+        getBills(),
+        getPayments(),
+        getDirectDebits(),
+        getReminders(),
+      ]);
+      
+      setBillers(b); 
+      setBills(bi); 
+      setPayments(p); 
+      setDDs(d); 
+      setReminders(r);
+      
+      await loadBudgets();
+      
+      if (permission === 'granted') {
+        checkUpcomingBills(bi, daysUntil);
       }
-    }
-    load();
+      
+      await checkAndNotify(r);
 
-    const unsub = async () => {
-      try { await pb.collection('bills').unsubscribe('*'); } catch {}
-      try { await pb.collection('payments').unsubscribe('*'); } catch {}
-      try { await pb.collection('direct_debits').unsubscribe('*'); } catch {}
-      try { await pb.collection('reminders').unsubscribe('*'); } catch {}
-      try { await pb.collection('billers').unsubscribe('*'); } catch {}
+      // ── Auto-SMS Check ──
+      const phone = localStorage.getItem('bt_phone_number');
+      if (phone && bi.length > 0) {
+        setTimeout(async () => {
+          const result = await checkAndSendAutoSms(bi, daysUntil);
+          if (result.sent) {
+            toast('📱 SMS reminder sent automatically!');
+          }
+        }, 2000);
+      }
+
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Setup Supabase realtime subscriptions
+  const setupSubscriptions = () => {
+    const channels = [];
+
+    const billersChannel = supabase
+      .channel('billers-changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'billers' },
+        () => load()
+      )
+      .subscribe();
+
+    const billsChannel = supabase
+      .channel('bills-changes')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'bills' },
+        () => load()
+      )
+      .subscribe();
+
+    const paymentsChannel = supabase
+      .channel('payments-changes')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'payments' },
+        () => load()
+      )
+      .subscribe();
+
+    const ddsChannel = supabase
+      .channel('direct_debits-changes')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'direct_debits' },
+        () => load()
+      )
+      .subscribe();
+
+    const remindersChannel = supabase
+      .channel('reminders-changes')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'reminders' },
+        () => load()
+      )
+      .subscribe();
+
+    channels.push(billersChannel, billsChannel, paymentsChannel, ddsChannel, remindersChannel);
+
+    return () => {
+      channels.forEach(channel => {
+        supabase.removeChannel(channel);
+      });
     };
-    const subscribe = async () => {
-      try { await pb.collection('bills').subscribe('*', () => load()); } catch {}
-      try { await pb.collection('payments').subscribe('*', () => load()); } catch {}
-      try { await pb.collection('direct_debits').subscribe('*', () => load()); } catch {}
-      try { await pb.collection('reminders').subscribe('*', () => load()); } catch {}
-      try { await pb.collection('billers').subscribe('*', () => load()); } catch {}
-    };
-    subscribe();
-    return () => { unsub(); };
+  };
+
+  useEffect(() => {
+    load();
+    const cleanup = setupSubscriptions();
+    return cleanup;
   }, []);
 
   // 📊 Monthly spending data for chart
@@ -216,7 +259,8 @@ export default function Dashboard() {
     const categoryData: Record<string, number> = {};
     
     bills.forEach(b => {
-      const category = b.expand?.biller_id?.category || 'Other';
+      const billWithBiller = b as any;
+      const category = billWithBiller.biller?.category || 'Other';
       categoryData[category] = (categoryData[category] || 0) + b.current_balance;
     });
     
@@ -239,7 +283,7 @@ export default function Dashboard() {
 
   const upcomingBills = bills
     .filter(b => b.next_bill_date && daysUntil(b.next_bill_date) !== null && daysUntil(b.next_bill_date)! <= 30)
-    .sort((a, b) => new Date(a.next_bill_date).getTime() - new Date(b.next_bill_date).getTime());
+    .sort((a, b) => new Date(a.next_bill_date!).getTime() - new Date(b.next_bill_date!).getTime());
 
   const handleQuickPay = async () => {
     setQuickPayError('');
@@ -267,7 +311,7 @@ export default function Dashboard() {
       });
       if (result.success) {
         toast(result.message);
-        notifyPaymentRecorded(quickPay.expand?.biller_id?.name || 'Bill', parseFloat(payAmount));
+        notifyPaymentRecorded(quickPay.biller?.name || 'Bill', parseFloat(payAmount));
       } else {
         toast('Something went wrong', 'error');
       }
@@ -280,17 +324,23 @@ export default function Dashboard() {
   const handleQuickReminder = async (bill: Bill, daysBefore: number) => {
     setReminderSaving(true);
     try {
-      const nextDate = new Date(bill.next_bill_date.replace(' ', 'T'));
+      const nextDate = new Date(bill.next_bill_date!.replace(' ', 'T'));
       nextDate.setDate(nextDate.getDate() - daysBefore);
       const reminderDate = nextDate.toISOString().split('T')[0];
-      const biller = bill.expand?.biller_id;
-      await pb.collection('reminders').create({
-        biller_id: bill.biller_id,
-        reminder_date: reminderDate,
-        type: 'payment_due',
-        message: `${biller?.name || 'Bill'} payment due ${daysBefore === 0 ? 'today' : `in ${daysBefore} day${daysBefore > 1 ? 's' : ''}`}`,
-        status: 'pending',
-      });
+      const billWithBiller = bill as any;
+      const billerName = billWithBiller.biller?.name || 'Bill';
+      
+      const { error } = await supabase
+        .from('reminders')
+        .insert([{
+          biller_id: bill.biller_id,
+          reminder_date: reminderDate,
+          type: 'payment_due',
+          message: `${billerName} payment due ${daysBefore === 0 ? 'today' : `in ${daysBefore} day${daysBefore > 1 ? 's' : ''}`}`,
+          status: 'pending',
+        }]);
+      
+      if (error) throw error;
       toast(`Reminder set for ${nextDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`);
       setQuickReminder(null);
     } catch { toast('Could not set reminder', 'error'); }
@@ -300,11 +350,11 @@ export default function Dashboard() {
   if (loading) return <SkeletonDashboard />;
 
   // Get categories for budget modal
-  const categories = [...new Set(bills.map(b => b.expand?.biller_id?.category).filter(Boolean))];
+  const categories = [...new Set(bills.map(b => (b as any).biller?.category).filter(Boolean))];
 
   // ── Dashboard Stats ──
   const overdueCount = bills.filter(b => {
-    const d = daysUntil(b.next_bill_date);
+    const d = daysUntil(b.next_bill_date!);
     return d !== null && d < 0 && b.current_balance > 0;
   }).length;
 
@@ -342,54 +392,53 @@ export default function Dashboard() {
         </div>
 
         {/* ── SECTION 2: Quick Stats ── */}
-      
-<div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-  <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl px-3 py-2.5 flex items-center justify-between hover:border-sky-500/30 transition-all">
-    <div>
-      <p className="text-[9px] sm:text-[10px] text-slate-400 font-medium">Total Owed</p>
-      <p className="text-sm sm:text-base font-bold text-slate-100">{fmt(totalBalance)}</p>
-      <p className="text-[8px] sm:text-[9px] text-slate-500">{bills.length} bills</p>
-    </div>
-    <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-sky-500/10 flex items-center justify-center">
-      <Wallet size={13} className="sm:w-3.5 sm:h-3.5 text-sky-400" />
-    </div>
-  </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl px-3 py-2.5 flex items-center justify-between hover:border-sky-500/30 transition-all">
+            <div>
+              <p className="text-[9px] sm:text-[10px] text-slate-400 font-medium">Total Owed</p>
+              <p className="text-sm sm:text-base font-bold text-slate-100">{fmt(totalBalance)}</p>
+              <p className="text-[8px] sm:text-[9px] text-slate-500">{bills.length} bills</p>
+            </div>
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-sky-500/10 flex items-center justify-center">
+              <Wallet size={13} className="sm:w-3.5 sm:h-3.5 text-sky-400" />
+            </div>
+          </div>
 
-  <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl px-3 py-2.5 flex items-center justify-between hover:border-emerald-500/30 transition-all">
-    <div>
-      <p className="text-[9px] sm:text-[10px] text-slate-400 font-medium">Paid This Month</p>
-      <p className="text-sm sm:text-base font-bold text-emerald-400">{fmt(thisMonthPayments)}</p>
-      <p className="text-[8px] sm:text-[9px] text-slate-500">{paidThisMonth} payments</p>
-    </div>
-    <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
-      <CheckCircle2 size={13} className="sm:w-3.5 sm:h-3.5 text-emerald-400" />
-    </div>
-  </div>
+          <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl px-3 py-2.5 flex items-center justify-between hover:border-emerald-500/30 transition-all">
+            <div>
+              <p className="text-[9px] sm:text-[10px] text-slate-400 font-medium">Paid This Month</p>
+              <p className="text-sm sm:text-base font-bold text-emerald-400">{fmt(thisMonthPayments)}</p>
+              <p className="text-[8px] sm:text-[9px] text-slate-500">{paidThisMonth} payments</p>
+            </div>
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+              <CheckCircle2 size={13} className="sm:w-3.5 sm:h-3.5 text-emerald-400" />
+            </div>
+          </div>
 
-  <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl px-3 py-2.5 flex items-center justify-between hover:border-amber-500/30 transition-all">
-    <div>
-      <p className="text-[9px] sm:text-[10px] text-slate-400 font-medium">Upcoming</p>
-      <p className="text-sm sm:text-base font-bold text-amber-400">{upcomingCount}</p>
-      <p className="text-[8px] sm:text-[9px] text-slate-500">due in 30d</p>
-    </div>
-    <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-amber-500/10 flex items-center justify-center">
-      <Calendar size={13} className="sm:w-3.5 sm:h-3.5 text-amber-400" />
-    </div>
-  </div>
+          <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl px-3 py-2.5 flex items-center justify-between hover:border-amber-500/30 transition-all">
+            <div>
+              <p className="text-[9px] sm:text-[10px] text-slate-400 font-medium">Upcoming</p>
+              <p className="text-sm sm:text-base font-bold text-amber-400">{upcomingCount}</p>
+              <p className="text-[8px] sm:text-[9px] text-slate-500">due in 30d</p>
+            </div>
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-amber-500/10 flex items-center justify-center">
+              <Calendar size={13} className="sm:w-3.5 sm:h-3.5 text-amber-400" />
+            </div>
+          </div>
 
-  <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl px-3 py-2.5 flex items-center justify-between hover:border-red-500/30 transition-all">
-    <div>
-      <p className="text-[9px] sm:text-[10px] text-slate-400 font-medium">Overdue</p>
-      <p className={`text-sm sm:text-base font-bold ${overdueCount > 0 ? 'text-red-400' : 'text-slate-400'}`}>
-        {overdueCount}
-      </p>
-      <p className="text-[8px] sm:text-[9px] text-slate-500">needs attention</p>
-    </div>
-    <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-red-500/10 flex items-center justify-center">
-      <AlertTriangle size={13} className="sm:w-3.5 sm:h-3.5 text-red-400" />
-    </div>
-  </div>
-</div>
+          <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl px-3 py-2.5 flex items-center justify-between hover:border-red-500/30 transition-all">
+            <div>
+              <p className="text-[9px] sm:text-[10px] text-slate-400 font-medium">Overdue</p>
+              <p className={`text-sm sm:text-base font-bold ${overdueCount > 0 ? 'text-red-400' : 'text-slate-400'}`}>
+                {overdueCount}
+              </p>
+              <p className="text-[8px] sm:text-[9px] text-slate-500">needs attention</p>
+            </div>
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-red-500/10 flex items-center justify-center">
+              <AlertTriangle size={13} className="sm:w-3.5 sm:h-3.5 text-red-400" />
+            </div>
+          </div>
+        </div>
 
         {/* ── SECTION 3: Charts (2-column) ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
@@ -405,7 +454,7 @@ export default function Dashboard() {
                 <BarChart data={monthlyData} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                   <XAxis dataKey="month" stroke="#94a3b8" fontSize={11} tick={{ fill: '#94a3b8' }} />
-                 <YAxis stroke="#94a3b8" fontSize={11} tick={{ fill: '#94a3b8' }} tickFormatter={(value) => `£${value}`} />
+                  <YAxis stroke="#94a3b8" fontSize={11} tick={{ fill: '#94a3b8' }} tickFormatter={(value) => `£${value}`} />
                   <Tooltip 
                     contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#f1f5f9', fontSize: '12px' }}
                     formatter={(value: number) => [`£${value.toFixed(2)}`, 'Spent']}
@@ -483,8 +532,9 @@ export default function Dashboard() {
           ) : (
             <div className="space-y-1.5 sm:space-y-2">
               {upcomingBills.slice(0, 5).map(bill => {
-                const days = daysUntil(bill.next_bill_date)!;
-                const biller = bill.expand?.biller_id;
+                const billWithBiller = bill as any;
+                const days = daysUntil(bill.next_bill_date!)!;
+                const biller = billWithBiller.biller;
                 const isPaid = bill.current_balance === 0;
                 const isRecurring = bill.frequency && bill.frequency !== 'one_off';
                 const displayAmount = isPaid && isRecurring ? bill.last_bill_amount : bill.current_balance;
@@ -520,7 +570,7 @@ export default function Dashboard() {
                             {statusLabel}
                           </span>
                         </div>
-                        <p className="text-[9px] sm:text-xs text-slate-500">{new Date(bill.next_bill_date).toLocaleDateString('en-GB')}</p>
+                        <p className="text-[9px] sm:text-xs text-slate-500">{new Date(bill.next_bill_date!).toLocaleDateString('en-GB')}</p>
                       </div>
                     </div>
 
@@ -529,7 +579,6 @@ export default function Dashboard() {
                         {fmt(displayAmount)}
                       </p>
                       
-                      {/* ── Show icons for unpaid bills OR recurring bills with future dates ── */}
                       {(!isPaid || (isRecurring && bill.last_bill_amount > 0 && bill.current_balance === 0)) && (
                         <div className="flex gap-0.5 sm:gap-1">
                           <button 
@@ -559,11 +608,11 @@ export default function Dashboard() {
                                 toast('📱 SMS already sent today (1 per day limit)', 'error');
                                 return;
                               }
-                              const daysLeft = daysUntil(bill.next_bill_date);
+                              const daysLeft = daysUntil(bill.next_bill_date!);
                               const message = formatReminderMessage(
                                 biller?.name || 'Bill',
                                 bill.current_balance || displayAmount || 0,
-                                new Date(bill.next_bill_date).toLocaleDateString('en-GB'),
+                                new Date(bill.next_bill_date!).toLocaleDateString('en-GB'),
                                 daysLeft || 0
                               );
                               const result = await sendSmsReminder(phone, message);
@@ -615,8 +664,9 @@ export default function Dashboard() {
             ) : (
               <div className="space-y-1.5 sm:space-y-2">
                 {reminders.slice(0, 5).map(r => {
+                  const reminderWithBiller = r as any;
                   const days = daysUntil(r.reminder_date);
-                  const biller = r.expand?.biller_id;
+                  const biller = reminderWithBiller.biller;
                   const isUrgent = days !== null && days <= 2;
                   const isOverdue = days !== null && days < 0;
 
@@ -655,31 +705,34 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="space-y-1.5 sm:space-y-2">
-                {payments.slice(0, 5).map(p => (
-                  <div key={p.id} className="flex items-center justify-between py-1.5 sm:py-2 px-1.5 sm:px-2 rounded-xl hover:bg-slate-700/20 transition-colors gap-1 sm:gap-2">
-                    <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-                      <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0">
-                        <CreditCard size={10} className="sm:w-3.5 sm:h-3.5 text-emerald-400" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap">
-                          <p className="text-[11px] sm:text-sm font-medium text-slate-200 truncate max-w-[80px] xs:max-w-[120px] sm:max-w-none">{p.expand?.biller_id?.name ?? '—'}</p>
-                          {p.receipt && (
-                            <button 
-                              onClick={() => setViewingReceipt(p)} 
-                              className="flex items-center gap-0.5 text-[8px] sm:text-[10px] text-sky-400 hover:text-sky-300 bg-sky-500/10 px-1 sm:px-1.5 py-0.5 rounded-full transition-colors touch-target"
-                            >
-                              <Paperclip size={8} className="sm:w-2.5 sm:h-2.5" /> 
-                              <span className="hidden xs:inline">Receipt</span>
-                            </button>
-                          )}
+                {payments.slice(0, 5).map(p => {
+                  const paymentWithBiller = p as any;
+                  return (
+                    <div key={p.id} className="flex items-center justify-between py-1.5 sm:py-2 px-1.5 sm:px-2 rounded-xl hover:bg-slate-700/20 transition-colors gap-1 sm:gap-2">
+                      <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+                        <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0">
+                          <CreditCard size={10} className="sm:w-3.5 sm:h-3.5 text-emerald-400" />
                         </div>
-                        <p className="text-[8px] sm:text-xs text-slate-500 truncate">{new Date(p.payment_date).toLocaleDateString('en-GB')} · {p.method}</p>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap">
+                            <p className="text-[11px] sm:text-sm font-medium text-slate-200 truncate max-w-[80px] xs:max-w-[120px] sm:max-w-none">{paymentWithBiller.biller?.name ?? '—'}</p>
+                            {p.receipt && (
+                              <button 
+                                onClick={() => setViewingReceipt(p)} 
+                                className="flex items-center gap-0.5 text-[8px] sm:text-[10px] text-sky-400 hover:text-sky-300 bg-sky-500/10 px-1 sm:px-1.5 py-0.5 rounded-full transition-colors touch-target"
+                              >
+                                <Paperclip size={8} className="sm:w-2.5 sm:h-2.5" /> 
+                                <span className="hidden xs:inline">Receipt</span>
+                              </button>
+                            )}
+                          </div>
+                          <p className="text-[8px] sm:text-xs text-slate-500 truncate">{new Date(p.payment_date).toLocaleDateString('en-GB')} · {p.method}</p>
+                        </div>
                       </div>
+                      <p className="text-[11px] sm:text-sm font-semibold text-emerald-400 shrink-0">-{fmt(p.amount)}</p>
                     </div>
-                    <p className="text-[11px] sm:text-sm font-semibold text-emerald-400 shrink-0">-{fmt(p.amount)}</p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -812,7 +865,7 @@ export default function Dashboard() {
           <div className="space-y-4">
             <div className="bg-slate-700/30 rounded-xl p-3">
               <p className="text-xs text-slate-400">Bill</p>
-              <p className="font-semibold text-slate-100 text-sm sm:text-base">{quickReminder.expand?.biller_id?.name}</p>
+              <p className="font-semibold text-slate-100 text-sm sm:text-base">{(quickReminder as any).biller?.name || 'Unknown'}</p>
               <p className="text-xs text-slate-500">Due: {quickReminder.next_bill_date ? new Date(quickReminder.next_bill_date.replace(' ','T')).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}</p>
             </div>
             <p className="text-sm text-slate-400">Remind me:</p>
@@ -842,40 +895,44 @@ export default function Dashboard() {
 
       {/* ── Quick Pay Modal ── */}
       <Modal open={!!quickPay} onClose={() => { setQuickPay(null); setQuickPayError(''); }} title="Quick Payment" size="sm">
-        <div className="space-y-4">
-          <div className="bg-slate-700/30 rounded-xl p-3 space-y-1">
-            <p className="text-xs text-slate-400">Paying</p>
-            <p className="font-semibold text-slate-100 text-sm sm:text-base">{quickPay?.expand?.biller_id?.name}</p>
-            <div className="flex items-center gap-3 flex-wrap">
-              <p className="text-xs text-slate-500">Balance: {fmt(quickPay?.current_balance || 0)}</p>
-              {quickPay?.frequency && (
-                <span className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-400">
-                  🔄 {FREQUENCY_LABELS[quickPay.frequency as any] || quickPay.frequency}
-                </span>
+        {quickPay && (
+          <div className="space-y-4">
+            <div className="bg-slate-700/30 rounded-xl p-3 space-y-1">
+              <p className="text-xs text-slate-400">Paying</p>
+              <p className="font-semibold text-slate-100 text-sm sm:text-base">
+                {(quickPay as any)?.biller?.name || 'Unknown Biller'}
+              </p>
+              <div className="flex items-center gap-3 flex-wrap">
+                <p className="text-xs text-slate-500">Balance: {fmt(quickPay?.current_balance || 0)}</p>
+                {quickPay?.frequency && (
+                  <span className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-400">
+                    🔄 {FREQUENCY_LABELS[quickPay.frequency as any] || quickPay.frequency}
+                  </span>
+                )}
+              </div>
+              {quickPay?.frequency && quickPay.frequency !== 'one_off' && (
+                <p className="text-[10px] sm:text-xs text-emerald-400/70">Next date will auto-update after payment</p>
               )}
             </div>
-            {quickPay?.frequency && quickPay.frequency !== 'one_off' && (
-              <p className="text-[10px] sm:text-xs text-emerald-400/70">Next date will auto-update after payment</p>
+            <div>
+              <label className="label">Amount (£)</label>
+              <input type="number" step="0.01" className="input" value={payAmount} onChange={e => { setPayAmount(e.target.value); setQuickPayError(''); }} placeholder="0.00" />
+            </div>
+            <div>
+              <label className="label">Date</label>
+              <input type="date" className="input" value={payDate} onChange={e => setPayDate(e.target.value)} />
+            </div>
+            {quickPayError && (
+              <p className="text-xs text-red-400 flex items-center gap-1">⚠ {quickPayError}</p>
             )}
+            <div className="flex gap-3 pt-2">
+              <button onClick={handleQuickPay} disabled={paying} className="btn-primary flex-1 justify-center touch-target">
+                <Zap size={14} /> {paying ? 'Recording...' : 'Record Payment'}
+              </button>
+              <button onClick={() => { setQuickPay(null); setQuickPayError(''); }} className="btn-secondary touch-target">Cancel</button>
+            </div>
           </div>
-          <div>
-            <label className="label">Amount (£)</label>
-            <input type="number" step="0.01" className="input" value={payAmount} onChange={e => { setPayAmount(e.target.value); setQuickPayError(''); }} placeholder="0.00" />
-          </div>
-          <div>
-            <label className="label">Date</label>
-            <input type="date" className="input" value={payDate} onChange={e => setPayDate(e.target.value)} />
-          </div>
-          {quickPayError && (
-            <p className="text-xs text-red-400 flex items-center gap-1">⚠ {quickPayError}</p>
-          )}
-          <div className="flex gap-3 pt-2">
-            <button onClick={handleQuickPay} disabled={paying} className="btn-primary flex-1 justify-center touch-target">
-              <Zap size={14} /> {paying ? 'Recording...' : 'Record Payment'}
-            </button>
-            <button onClick={() => { setQuickPay(null); setQuickPayError(''); }} className="btn-secondary touch-target">Cancel</button>
-          </div>
-        </div>
+        )}
       </Modal>
 
       {/* ── Receipt Viewer ── */}

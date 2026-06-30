@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect } from 'react';
-import pb, { Biller, Bill, Payment, Reminder } from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
 import { Search, Building2, FileText, CreditCard, Bell, X, Sparkles } from 'lucide-react';
 import Link from 'next/link';
 import { CategoryBadge } from '@/components/ui/CategoryBadge';
@@ -33,49 +33,84 @@ export default function SearchPage() {
       setLoading(true);
       setSearched(true);
       try {
-        const q = encodeURIComponent(`name~"${query}" || notes~"${query}" || account_number~"${query}"`);
-        const q2 = encodeURIComponent(`notes~"${query}"`);
-        const q3 = encodeURIComponent(`message~"${query}"`);
+        // Search billers
+        const { data: billers } = await supabase
+          .from('billers')
+          .select('*')
+          .or(`name.ilike.%${query}%,notes.ilike.%${query}%,account_number.ilike.%${query}%`)
+          .limit(20);
 
-        const [billers, bills, payments, reminders] = await Promise.all([
-          pb.collection('billers').getFullList<Biller>({ filter: decodeURIComponent(q) }).catch(() => []),
-          pb.collection('bills').getFullList<Bill>({ filter: decodeURIComponent(q2), expand: 'biller_id' }).catch(() => []),
-          pb.collection('payments').getFullList<Payment>({ filter: decodeURIComponent(q2), expand: 'biller_id' }).catch(() => []),
-          pb.collection('reminders').getFullList<Reminder>({ filter: decodeURIComponent(q3), expand: 'biller_id' }).catch(() => []),
-        ]);
+        // Search bills with biller info
+        const { data: bills } = await supabase
+          .from('bills')
+          .select(`
+            *,
+            biller:billers(id, name)
+          `)
+          .or(`notes.ilike.%${query}%`)
+          .limit(20);
+
+        // Search payments with biller info
+        const { data: payments } = await supabase
+          .from('payments')
+          .select(`
+            *,
+            biller:billers(id, name)
+          `)
+          .or(`notes.ilike.%${query}%`)
+          .limit(20);
+
+        // Search reminders with biller info
+        const { data: reminders } = await supabase
+          .from('reminders')
+          .select(`
+            *,
+            biller:billers(id, name)
+          `)
+          .or(`message.ilike.%${query}%`)
+          .limit(20);
 
         const res: Result[] = [
-          ...billers.map(b => ({
-            id: b.id, type: 'biller' as const,
+          ...(billers || []).map((b: any) => ({
+            id: b.id,
+            type: 'biller' as const,
             title: b.name,
             subtitle: b.category + (b.account_number ? ` · ${b.account_number}` : ''),
             href: `/billers/${b.id}`,
             meta: b.contact_info,
           })),
-          ...bills.map(b => ({
-            id: b.id, type: 'bill' as const,
-            title: b.expand?.biller_id?.name ?? 'Bill',
+          ...(bills || []).map((b: any) => ({
+            id: b.id,
+            type: 'bill' as const,
+            title: b.biller?.name ?? 'Bill',
             subtitle: `Balance: ${fmt(b.current_balance)}`,
             href: `/bills?highlight=${b.id}`,
             meta: b.next_bill_date ? `Next: ${fmtDate(b.next_bill_date)}` : '',
           })),
-          ...payments.map(p => ({
-            id: p.id, type: 'payment' as const,
-            title: p.expand?.biller_id?.name ?? 'Payment',
+          ...(payments || []).map((p: any) => ({
+            id: p.id,
+            type: 'payment' as const,
+            title: p.biller?.name ?? 'Payment',
             subtitle: `${fmt(p.amount)} · ${p.method}`,
             href: `/payments`,
             meta: fmtDate(p.payment_date),
           })),
-          ...reminders.map(r => ({
-            id: r.id, type: 'reminder' as const,
-            title: r.expand?.biller_id?.name ?? 'Reminder',
+          ...(reminders || []).map((r: any) => ({
+            id: r.id,
+            type: 'reminder' as const,
+            title: r.biller?.name ?? 'Reminder',
             subtitle: r.message || r.type?.replace('_', ' '),
             href: `/reminders`,
             meta: fmtDate(r.reminder_date),
           })),
         ];
         setResults(res);
-      } finally { setLoading(false); }
+      } catch (error) {
+        console.error('Search error:', error);
+        setResults([]);
+      } finally { 
+        setLoading(false); 
+      }
     }, 300);
     return () => clearTimeout(timer);
   }, [query]);

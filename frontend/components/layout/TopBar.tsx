@@ -1,5 +1,5 @@
 'use client';
-import pb from '@/lib/pocketbase';
+import pb from '@/lib/supabase-adapter';
 import { usePathname } from 'next/navigation';
 import { Wifi, WifiOff } from 'lucide-react';
 import { useEffect, useState } from 'react';

@@ -1,5 +1,5 @@
 'use client';
-import pb from '@/lib/pocketbase';
+import pb from '@/lib/supabase-adapter';
 
 export type Frequency = 'weekly' | 'fortnightly' | 'monthly' | 'quarterly' | 'annual' | 'one_off';
 

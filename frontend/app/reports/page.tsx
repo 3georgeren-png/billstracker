@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import pb, { Biller, Payment, DirectDebit, Bill } from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
 import { BarChart3, TrendingUp, Calendar, Calculator, PieChart, DollarSign, CreditCard, AlertCircle } from 'lucide-react';
 import { FilterDropdown } from '@/components/ui/FilterDropdown';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -14,21 +14,50 @@ const COLORS: Record<string, string> = {
 };
 
 export default function Reports() {
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [dds, setDDs] = useState<DirectDebit[]>([]);
-  const [bills, setBills] = useState<Bill[]>([]);
+  const [payments, setPayments] = useState<any[]>([]);
+  const [dds, setDDs] = useState<any[]>([]);
+  const [bills, setBills] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [year, setYear] = useState(new Date().getFullYear());
   const [income, setIncome] = useState('');
 
   useEffect(() => {
     async function load() {
-      const [p, d, b] = await Promise.all([
-        pb.collection('payments').getFullList<Payment>({ expand: 'biller_id', sort: '-payment_date' }),
-        pb.collection('direct_debits').getFullList<DirectDebit>({ expand: 'biller_id', filter: 'status="active"' }),
-        pb.collection('bills').getFullList<Bill>({ expand: 'biller_id' }),
-      ]);
-      setPayments(p); setDDs(d); setBills(b); setLoading(false);
+      try {
+        // Load payments with biller info
+        const { data: paymentsData } = await supabase
+          .from('payments')
+          .select(`
+            *,
+            biller:billers(id, name, category)
+          `)
+          .order('payment_date', { ascending: false });
+
+        // Load active direct debits with biller info
+        const { data: ddsData } = await supabase
+          .from('direct_debits')
+          .select(`
+            *,
+            biller:billers(id, name, category)
+          `)
+          .eq('status', 'active');
+
+        // Load bills with biller info
+        const { data: billsData } = await supabase
+          .from('bills')
+          .select(`
+            *,
+            biller:billers(id, name, category)
+          `);
+
+        setPayments(paymentsData || []);
+        setDDs(ddsData || []);
+        setBills(billsData || []);
+      } catch (error) {
+        console.error('Error loading reports data:', error);
+      } finally {
+        setLoading(false);
+      }
     }
     load();
   }, []);
@@ -46,7 +75,7 @@ export default function Reports() {
   // By category
   const byCategory: Record<string, number> = {};
   yearPayments.forEach(p => {
-    const cat = p.expand?.biller_id?.category || 'Other';
+    const cat = p.biller?.category || 'Other';
     byCategory[cat] = (byCategory[cat] || 0) + (p.amount || 0);
   });
   const sortedCats = Object.entries(byCategory).sort(([,a],[,b]) => b - a);

@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect } from 'react';
-import pb, { Biller, Bill, Payment, DirectDebit } from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
 import { Download, FileText, Table, Calendar } from 'lucide-react';
 import { toast } from '@/components/ui/Toaster';
 
@@ -12,22 +12,57 @@ function fmtDate(d: string) {
 }
 
 export default function ExportPage() {
-  const [billers, setBillers] = useState<Biller[]>([]);
-  const [bills, setBills] = useState<Bill[]>([]);
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [dds, setDDs] = useState<DirectDebit[]>([]);
+  const [billers, setBillers] = useState<any[]>([]);
+  const [bills, setBills] = useState<any[]>([]);
+  const [payments, setPayments] = useState<any[]>([]);
+  const [dds, setDDs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterMonth, setFilterMonth] = useState('');
 
   useEffect(() => {
     async function load() {
-      const [b, bi, p, d] = await Promise.all([
-        pb.collection('billers').getFullList<Biller>({ sort: 'name' }),
-        pb.collection('bills').getFullList<Bill>({ expand: 'biller_id' }),
-        pb.collection('payments').getFullList<Payment>({ expand: 'biller_id', sort: '-payment_date' }),
-        pb.collection('direct_debits').getFullList<DirectDebit>({ expand: 'biller_id' }),
-      ]);
-      setBillers(b); setBills(bi); setPayments(p); setDDs(d); setLoading(false);
+      try {
+        // Load billers
+        const { data: billersData } = await supabase
+          .from('billers')
+          .select('*')
+          .order('name');
+
+        // Load bills with biller info
+        const { data: billsData } = await supabase
+          .from('bills')
+          .select(`
+            *,
+            biller:billers(id, name, category)
+          `);
+
+        // Load payments with biller info
+        const { data: paymentsData } = await supabase
+          .from('payments')
+          .select(`
+            *,
+            biller:billers(id, name, category)
+          `)
+          .order('payment_date', { ascending: false });
+
+        // Load direct debits with biller info
+        const { data: ddsData } = await supabase
+          .from('direct_debits')
+          .select(`
+            *,
+            biller:billers(id, name, category)
+          `);
+
+        setBillers(billersData || []);
+        setBills(billsData || []);
+        setPayments(paymentsData || []);
+        setDDs(ddsData || []);
+      } catch (error) {
+        console.error('Error loading export data:', error);
+        toast('Error loading data', 'error');
+      } finally {
+        setLoading(false);
+      }
     }
     load();
   }, []);
@@ -44,15 +79,15 @@ export default function ExportPage() {
       ['Date', 'Biller', 'Amount', 'Method', 'Notes'],
       ...filteredPayments.map(p => [
         fmtDate(p.payment_date),
-        p.expand?.biller_id?.name ?? '',
+        p.biller?.name ?? '',
         (p.amount || 0).toFixed(2),
-        p.method,
+        p.method || '',
         p.notes || ''
       ])
     ];
     const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
     download(csv, `payments-${filterMonth || 'all'}.csv`, 'text/csv');
-    toast('Payments CSV downloaded');
+    toast('✅ Payments CSV downloaded');
   };
 
   // Export billers as CSV
@@ -60,9 +95,11 @@ export default function ExportPage() {
     const rows = [
       ['Name', 'Category', 'Account Number', 'Contact', 'Current Balance', 'Next Bill Date', 'Notes'],
       ...billers.map(b => {
-        const bill = bills.find(bi => bi.biller_id === b.id);
+        const bill = bills.find((bi: any) => bi.biller_id === b.id);
         return [
-          b.name, b.category, b.account_number || '',
+          b.name,
+          b.category || '',
+          b.account_number || '',
           b.contact_info || '',
           (bill?.current_balance || 0).toFixed(2),
           bill?.next_bill_date ? fmtDate(bill.next_bill_date) : '',
@@ -72,13 +109,13 @@ export default function ExportPage() {
     ];
     const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
     download(csv, 'billers.csv', 'text/csv');
-    toast('Billers CSV downloaded');
+    toast('✅ Billers CSV downloaded');
   };
 
   // Export full report as HTML (printable PDF)
   const exportReportPDF = () => {
     const totalPaid = filteredPayments.reduce((s, p) => s + (p.amount || 0), 0);
-    const totalDDs = dds.filter(d => d.status === 'active').reduce((s, d) => s + (d.amount || 0), 0);
+    const totalDDs = dds.filter((d: any) => d.status === 'active').reduce((s, d) => s + (d.amount || 0), 0);
     const totalOwed = bills.reduce((s, b) => s + (b.current_balance || 0), 0);
     const period = filterMonth
       ? new Date(filterMonth + '-01').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
@@ -106,7 +143,7 @@ export default function ExportPage() {
 </style>
 </head>
 <body>
-<h1>BillsTracker Report</h1>
+<h1>📊 BillsTracker Report</h1>
 <p style="color:#64748b">Period: ${period} · Generated: ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
 
 <div class="summary">
@@ -115,26 +152,26 @@ export default function ExportPage() {
   <div class="stat"><div class="stat-value">${fmt(totalDDs)}</div><div class="stat-label">Monthly DDs</div></div>
 </div>
 
-<h2>Payments (${filteredPayments.length})</h2>
+<h2>💰 Payments (${filteredPayments.length})</h2>
 <table>
   <tr><th>Date</th><th>Biller</th><th>Amount</th><th>Method</th><th>Notes</th></tr>
-  ${filteredPayments.map(p => `<tr><td>${fmtDate(p.payment_date)}</td><td>${p.expand?.biller_id?.name ?? '—'}</td><td><strong>${fmt(p.amount)}</strong></td><td>${p.method}</td><td>${p.notes || ''}</td></tr>`).join('')}
+  ${filteredPayments.map(p => `<tr><td>${fmtDate(p.payment_date)}</td><td>${p.biller?.name ?? '—'}</td><td><strong>${fmt(p.amount)}</strong></td><td>${p.method || ''}</td><td>${p.notes || ''}</td></tr>`).join('')}
   <tr style="background:#e0f2fe"><td colspan="2"><strong>Total</strong></td><td><strong>${fmt(totalPaid)}</strong></td><td colspan="2"></td></tr>
 </table>
 
-<h2>Billers & Current Balances</h2>
+<h2>🏢 Billers & Current Balances</h2>
 <table>
   <tr><th>Biller</th><th>Category</th><th>Account</th><th>Balance</th><th>Next Bill</th></tr>
   ${billers.map(b => {
-    const bill = bills.find(bi => bi.biller_id === b.id);
-    return `<tr><td>${b.name}</td><td>${b.category}</td><td>${b.account_number || '—'}</td><td>${fmt(bill?.current_balance || 0)}</td><td>${bill?.next_bill_date ? fmtDate(bill.next_bill_date) : '—'}</td></tr>`;
+    const bill = bills.find((bi: any) => bi.biller_id === b.id);
+    return `<tr><td>${b.name}</td><td>${b.category || ''}</td><td>${b.account_number || '—'}</td><td>${fmt(bill?.current_balance || 0)}</td><td>${bill?.next_bill_date ? fmtDate(bill.next_bill_date) : '—'}</td></tr>`;
   }).join('')}
 </table>
 
-<h2>Active Direct Debits</h2>
+<h2>🔄 Active Direct Debits</h2>
 <table>
   <tr><th>Biller</th><th>Amount</th><th>Collection Day</th><th>Status</th></tr>
-  ${dds.filter(d => d.status === 'active').map(d => `<tr><td>${d.expand?.biller_id?.name ?? '—'}</td><td>${fmt(d.amount)}/mo</td><td>${d.collection_day}th</td><td>${d.status}</td></tr>`).join('')}
+  ${dds.filter((d: any) => d.status === 'active').map(d => `<tr><td>${d.biller?.name ?? '—'}</td><td>${fmt(d.amount)}/mo</td><td>${d.collection_day}th</td><td>${d.status}</td></tr>`).join('')}
 </table>
 
 <div class="footer">BillsTracker Home Edition · ${new Date().getFullYear()}</div>
@@ -142,7 +179,7 @@ export default function ExportPage() {
 </html>`;
 
     download(htmlContent, `billstracker-report-${filterMonth || 'all'}.html`, 'text/html');
-    toast('Report downloaded — open in browser and print to PDF');
+    toast('✅ Report downloaded — open in browser and print to PDF');
   };
 
   function download(content: string, filename: string, type: string) {
@@ -157,7 +194,7 @@ export default function ExportPage() {
 
   return (
     <div className="space-y-6 max-w-3xl mx-auto">
-      <h1 className="page-title">Export</h1>
+      <h1 className="page-title">📤 Export</h1>
 
       {/* Period filter */}
       <div className="card p-4 flex items-center gap-4 flex-wrap">

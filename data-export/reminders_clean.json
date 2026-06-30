@@ -1,0 +1,15 @@
+[
+  {
+    "biller_id": "7f2habuyr0s9nwg",
+    "collectionId": "pbc_163143500",
+    "collectionName": "reminders",
+    "created": "2026-06-25 11:52:39.151Z",
+    "id": "jr4uz4u6s69evy2",
+    "message": "Zoy's School Fee - \u00a320.00 due on 2 Jul",
+    "reminder_date": "2026-06-30 00:00:00.000Z",
+    "snoozed_until": "2026-06-26 00:00:00.000Z",
+    "status": "pending",
+    "type": "payment_due",
+    "updated": "2026-06-25 22:20:38.683Z"
+  }
+]

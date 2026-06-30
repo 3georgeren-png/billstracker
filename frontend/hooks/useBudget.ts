@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
-import pb from '@/lib/pocketbase';
+import pb from '@/lib/supabase-adapter';
+import { getBudgets, createBudget, updateBudget, deleteBudget } from '@/lib/services/budgets';
 
 export type Budget = {
   id: string;
@@ -8,8 +9,8 @@ export type Budget = {
   amount: number;
   spent: number;
   period: 'monthly' | 'quarterly' | 'yearly';
-  createdAt: string;
-  updatedAt: string;
+  created: string;
+  updated: string;
 };
 
 export function useBudget() {
@@ -19,12 +20,11 @@ export function useBudget() {
   // Load budgets
   const loadBudgets = async () => {
     try {
-      const data = await pb.collection('budgets').getFullList({
-        sort: 'category',
-      });
+      const data = await getBudgets();
       setBudgets(data as Budget[]);
     } catch (error) {
       console.error('Error loading budgets:', error);
+      setBudgets([]);
     } finally {
       setLoading(false);
     }
@@ -34,9 +34,9 @@ export function useBudget() {
   const saveBudget = async (budget: Partial<Budget>) => {
     try {
       if (budget.id) {
-        await pb.collection('budgets').update(budget.id, budget);
+        await updateBudget(budget.id, budget);
       } else {
-        await pb.collection('budgets').create(budget);
+        await createBudget(budget);
       }
       await loadBudgets();
       return { success: true, message: 'Budget saved successfully' };
@@ -49,7 +49,7 @@ export function useBudget() {
   // Delete budget
   const deleteBudget = async (id: string) => {
     try {
-      await pb.collection('budgets').delete(id);
+      await deleteBudget(id);
       await loadBudgets();
       return { success: true, message: 'Budget deleted' };
     } catch (error) {
@@ -64,7 +64,7 @@ export function useBudget() {
     const currentYear = new Date().getFullYear();
     
     // Get all payments for current month
-    const monthPayments = payments.filter(p => {
+    const monthPayments = payments.filter((p: any) => {
       const date = new Date(p.payment_date);
       return date.getMonth() === currentMonth && date.getFullYear() === currentYear;
     });
@@ -72,9 +72,10 @@ export function useBudget() {
     // Calculate spending by category
     const spending: Record<string, number> = {};
     
-    monthPayments.forEach(p => {
-      const bill = bills.find(b => b.biller_id === p.biller_id);
-      const category = bill?.expand?.biller_id?.category || 'Other';
+    monthPayments.forEach((p: any) => {
+      // For Supabase, the biller data is nested differently
+      const bill = bills.find((b: any) => b.biller_id === p.biller_id);
+      const category = bill?.biller?.category || 'Other';
       spending[category] = (spending[category] || 0) + p.amount;
     });
 

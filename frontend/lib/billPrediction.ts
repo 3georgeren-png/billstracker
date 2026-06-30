@@ -1,4 +1,4 @@
-import pb from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
 
 type BillPrediction = {
   predictedAmount: number;
@@ -15,17 +15,27 @@ type BillPrediction = {
 export async function predictBillAmount(billId: string): Promise<BillPrediction | null> {
   try {
     // Get the bill
-    const bill = await pb.collection('bills').getOne(billId);
-    
-    // Get last 10 payments for this biller
-    const payments = await pb.collection('payments').getFullList({
-      filter: `bill_id="${billId}"`,
-      sort: '-payment_date',
-      limit: 10,
-    });
+    const { data: bill, error: billError } = await supabase
+      .from('bills')
+      .select('*')
+      .eq('id', billId)
+      .single();
+
+    if (billError) throw billError;
+    if (!bill) return null;
+
+    // Get last 10 payments for this bill
+    const { data: payments, error: paymentsError } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('bill_id', billId)
+      .order('payment_date', { ascending: false })
+      .limit(10);
+
+    if (paymentsError) throw paymentsError;
 
     // Get amounts from payments (exclude £0 payments)
-    const amounts = payments
+    const amounts = (payments || [])
       .map(p => p.amount)
       .filter(a => a > 0);
 

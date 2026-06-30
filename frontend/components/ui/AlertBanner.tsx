@@ -4,7 +4,7 @@ import { Bell, X, ChevronRight, Calendar, Clock, AlertCircle, Zap, BellRing, Eye
 import { useRouter } from 'next/navigation';
 import { Bill } from '@/lib/pocketbase';
 import { categoryEmoji } from '@/components/ui/CategoryBadge';
-import pb from '@/lib/pocketbase';
+import pb from '@/lib/supabase-adapter';
 import { toast } from '@/components/ui/Toaster';
 import { createPortal } from 'react-dom';
 

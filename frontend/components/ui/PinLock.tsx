@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { Lock, Delete } from 'lucide-react';
-import pb from '@/lib/pocketbase';
+import pb from '@/lib/supabase-adapter';
 
 const PIN_VERIFIED_KEY = 'bt_pin_verified';
 const PIN_HASH_KEY = 'bt_pin_hash';
