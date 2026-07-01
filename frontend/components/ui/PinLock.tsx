@@ -60,7 +60,7 @@ export function PinLock({ children }: { children: React.ReactNode }) {
       const { data, error } = await supabase
         .from('pin_auth')
         .select('pin_hash')
-        .eq('enabled', true)
+        .eq('is_enabled', true)
         .limit(1)
         .single();
 
@@ -88,7 +88,7 @@ export function PinLock({ children }: { children: React.ReactNode }) {
       const { data: existing, error: checkError } = await supabase
         .from('pin_auth')
         .select('id')
-        .eq('enabled', true)
+        .eq('is_enabled', true)
         .limit(1);
 
       if (checkError && checkError.code !== 'PGRST116') {
@@ -143,7 +143,7 @@ export function PinLock({ children }: { children: React.ReactNode }) {
       const { data: existing, error: checkError } = await supabase
         .from('pin_auth')
         .select('id')
-        .eq('enabled', true)
+        .eq('is_enabled', true)
         .limit(1);
 
       if (checkError) {
