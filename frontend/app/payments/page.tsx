@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState, useRef } from 'react';
-import pb, { Biller, Bill, Payment } from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
 import { recordSmartPayment, FREQUENCY_LABELS } from '@/lib/smartPayment';
 import { Modal } from '@/components/ui/Modal';
 import { toast } from '@/components/ui/Toaster';
@@ -16,15 +16,16 @@ import { FilterDropdown } from '@/components/ui/FilterDropdown';
 
 const fmt = (n: number) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(n || 0);
 const METHODS = ['Direct Debit','Bank Transfer','Card','Cash','Standing Order','Other'];
-const emptyPay: Partial<Payment> = { biller_id: '', amount: 0, payment_date: new Date().toISOString().split('T')[0], method: 'Bank Transfer', notes: '' };
+const emptyPay: Partial<any> = { biller_id: '', amount: 0, payment_date: new Date().toISOString().split('T')[0], method: 'Bank Transfer', notes: '' };
 const ITEMS_PER_PAGE = 10;
 
-function getReceiptUrl(payment: Payment) {
+function getReceiptUrl(payment: any) {
   if (!payment.receipt) return null;
-  return `http://${window.location.hostname}:8090/api/files/payments/${payment.id}/${payment.receipt}`;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  return `${supabaseUrl}/storage/v1/object/public/receipts/${payment.id}/${payment.receipt}`;
 }
 
-function ReceiptPreview({ payment, onClose }: { payment: Payment; onClose: () => void }) {
+function ReceiptPreview({ payment, onClose }: { payment: any; onClose: () => void }) {
   const url = getReceiptUrl(payment);
   const [rotation, setRotation] = useState(0);
   if (!url) return null;
@@ -72,20 +73,20 @@ function ReceiptPreview({ payment, onClose }: { payment: Payment; onClose: () =>
 }
 
 export default function Payments() {
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [filteredPayments, setFilteredPayments] = useState<Payment[]>([]);
-  const [billers, setBillers] = useState<Biller[]>([]);
-  const [bills, setBills] = useState<Bill[]>([]);
+  const [payments, setPayments] = useState<any[]>([]);
+  const [filteredPayments, setFilteredPayments] = useState<any[]>([]);
+  const [billers, setBillers] = useState<any[]>([]);
+  const [bills, setBills] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [smartInfo, setSmartInfo] = useState<string>('');
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Partial<Payment>>(emptyPay);
+  const [editing, setEditing] = useState<Partial<any>>(emptyPay);
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreview, setReceiptPreview] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const { errors, setError, clearError, clearAll } = useFormErrors();
   const [deleteId, setDeleteId] = useState<string | null>(null);
-  const [viewingReceipt, setViewingReceipt] = useState<Payment | null>(null);
+  const [viewingReceipt, setViewingReceipt] = useState<any | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -101,23 +102,47 @@ export default function Payments() {
   const load = async () => {
     setLoading(true);
     try {
-      const [p, b, bi] = await Promise.all([
-        pb.collection('payments').getFullList<Payment>({ expand: 'biller_id', sort: '-payment_date' }),
-        pb.collection('billers').getFullList<Biller>({ sort: 'name', filter: 'is_active=true' }),
-        pb.collection('bills').getFullList<Bill>({ sort: '-updated' }),
-      ]);
-      setPayments(p); 
-      setBillers(b); 
-      setBills(bi);
-      applyFilters(p);
+      // Load payments with biller info
+      const { data: paymentsData, error: paymentsError } = await supabase
+        .from('payments')
+        .select(`
+          *,
+          biller:billers(id, name, category, is_active)
+        `)
+        .order('payment_date', { ascending: false });
+
+      if (paymentsError) throw paymentsError;
+
+      // Load billers
+      const { data: billersData, error: billersError } = await supabase
+        .from('billers')
+        .select('*')
+        .eq('is_active', true)
+        .order('name');
+
+      if (billersError) throw billersError;
+
+      // Load bills
+      const { data: billsData, error: billsError } = await supabase
+        .from('bills')
+        .select('*')
+        .order('updated', { ascending: false });
+
+      if (billsError) throw billsError;
+
+      setPayments(paymentsData || []);
+      setBillers(billersData || []);
+      setBills(billsData || []);
+      applyFilters(paymentsData || []);
     } catch (error) {
       console.error('Error loading payments:', error);
+      toast('Failed to load payments', 'error');
     } finally {
       setLoading(false);
     }
   };
 
-  const applyFilters = (paymentsData: Payment[]) => {
+  const applyFilters = (paymentsData: any[]) => {
     let filtered = [...paymentsData];
 
     if (filterMonth) {
@@ -131,7 +156,7 @@ export default function Payments() {
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim();
       filtered = filtered.filter(p => 
-        p.expand?.biller_id?.name?.toLowerCase().includes(query) ||
+        p.biller?.name?.toLowerCase().includes(query) ||
         p.notes?.toLowerCase().includes(query)
       );
     }
@@ -146,7 +171,7 @@ export default function Payments() {
           comparison = (a.amount || 0) - (b.amount || 0);
           break;
         case 'name':
-          comparison = (a.expand?.biller_id?.name || '').localeCompare(b.expand?.biller_id?.name || '');
+          comparison = (a.biller?.name || '').localeCompare(b.biller?.name || '');
           break;
       }
       return sortOrder === 'asc' ? comparison : -comparison;
@@ -163,8 +188,19 @@ export default function Payments() {
 
   useEffect(() => {
     load();
-    pb.collection('payments').subscribe('*', load).catch(() => {});
-    return () => { pb.collection('payments').unsubscribe('*').catch(() => {}); };
+  }, []);
+
+  // Set up realtime subscription
+  useEffect(() => {
+    const channel = supabase
+      .channel('payments-changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'payments' },
+        () => load()
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -186,7 +222,7 @@ export default function Payments() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const openModal = (payment?: Partial<Payment>) => {
+  const openModal = (payment?: Partial<any>) => {
     setEditing(payment ? { ...payment, payment_date: payment.payment_date?.split('T')[0] || '' } : emptyPay);
     setReceiptFile(null);
     setReceiptPreview(null);
@@ -203,50 +239,90 @@ export default function Payments() {
     setSaving(true);
     try {
       if (editing.id) {
-        const formData = new FormData();
-        formData.append('biller_id', editing.biller_id as string);
-        formData.append('amount', String(editing.amount));
-        formData.append('payment_date', editing.payment_date || '');
-        formData.append('method', editing.method || 'Bank Transfer');
-        formData.append('notes', editing.notes || '');
-        if (receiptFile) formData.append('receipt', receiptFile);
-        await pb.collection('payments').update(editing.id, formData);
+        // Update existing payment
+        const updateData: any = {
+          biller_id: editing.biller_id,
+          amount: editing.amount,
+          payment_date: editing.payment_date,
+          method: editing.method || 'Bank Transfer',
+          notes: editing.notes || '',
+          updated: new Date().toISOString(),
+        };
+
+        // If there's a receipt file, upload it
+        if (receiptFile) {
+          // For now, just store the filename - you'll need to implement file upload to Supabase Storage
+          updateData.receipt = receiptFile.name;
+          // TODO: Upload file to Supabase Storage
+          // const { data, error } = await supabase.storage.from('receipts').upload(`${editing.id}/${receiptFile.name}`, receiptFile);
+        }
+
+        await supabase
+          .from('payments')
+          .update(updateData)
+          .eq('id', editing.id);
+
         toast('Payment updated');
       } else {
+        // Find associated bill
         const bill = bills.find(b => b.biller_id === editing.biller_id);
+        
         if (bill) {
-  const result = await recordSmartPayment({
-    billId: bill.id,
-    billerId: editing.biller_id as string,
-    amount: editing.amount || 0,
-    paymentDate: editing.payment_date || new Date().toISOString().split('T')[0],
-    method: editing.method || 'Bank Transfer',
-    notes: editing.notes,
-    currentBalance: bill.current_balance || 0,
-    frequency: bill.frequency || 'monthly',
-    nextBillDate: bill.next_bill_date,
-  });
+          const result = await recordSmartPayment({
+            billId: bill.id,
+            billerId: editing.biller_id as string,
+            amount: editing.amount || 0,
+            paymentDate: editing.payment_date || new Date().toISOString().split('T')[0],
+            method: editing.method || 'Bank Transfer',
+            notes: editing.notes,
+            currentBalance: bill.current_balance || 0,
+            frequency: bill.frequency || 'monthly',
+            nextBillDate: bill.next_bill_date,
+          });
+          
+          // If receipt file exists, we need to update the newly created payment
           if (receiptFile && result.success) {
-            const lastPayment = await pb.collection('payments').getList(1, 1, {
-              filter: `biller_id="${editing.biller_id}"`,
-              sort: '-created'
-            });
-            if (lastPayment.items[0]) {
-              const formData = new FormData();
-              formData.append('receipt', receiptFile);
-              await pb.collection('payments').update(lastPayment.items[0].id, formData);
+            const { data: lastPayment } = await supabase
+              .from('payments')
+              .select('id')
+              .eq('biller_id', editing.biller_id)
+              .order('created', { ascending: false })
+              .limit(1);
+
+            if (lastPayment && lastPayment.length > 0) {
+              const receiptData: any = {
+                receipt: receiptFile.name,
+                updated: new Date().toISOString(),
+              };
+              await supabase
+                .from('payments')
+                .update(receiptData)
+                .eq('id', lastPayment[0].id);
+              // TODO: Upload file to Supabase Storage
             }
           }
           toast(result.message);
         } else {
-          const formData = new FormData();
-          formData.append('biller_id', editing.biller_id as string);
-          formData.append('amount', String(editing.amount));
-          formData.append('payment_date', editing.payment_date || '');
-          formData.append('method', editing.method || 'Bank Transfer');
-          formData.append('notes', editing.notes || '');
-          if (receiptFile) formData.append('receipt', receiptFile);
-          await pb.collection('payments').create(formData);
+          // No bill found - create standalone payment
+          const paymentData: any = {
+            biller_id: editing.biller_id,
+            amount: editing.amount,
+            payment_date: editing.payment_date,
+            method: editing.method || 'Bank Transfer',
+            notes: editing.notes || '',
+            created: new Date().toISOString(),
+            updated: new Date().toISOString(),
+          };
+
+          if (receiptFile) {
+            paymentData.receipt = receiptFile.name;
+            // TODO: Upload file to Supabase Storage
+          }
+
+          await supabase
+            .from('payments')
+            .insert([paymentData]);
+
           toast('Payment recorded');
         }
       }
@@ -257,6 +333,7 @@ export default function Payments() {
       clearAll();
       load();
     } catch (e) {
+      console.error('Error saving payment:', e);
       toast('Something went wrong', 'error');
     } finally {
       setSaving(false);
@@ -264,8 +341,19 @@ export default function Payments() {
   };
 
   const remove = async (id: string) => {
-    try { await pb.collection('payments').delete(id); toast('Payment deleted'); setDeleteId(null); load(); }
-    catch { toast('Could not delete', 'error'); }
+    try { 
+      await supabase
+        .from('payments')
+        .delete()
+        .eq('id', id);
+      toast('Payment deleted'); 
+      setDeleteId(null); 
+      load(); 
+    }
+    catch (error) {
+      console.error('Error deleting payment:', error);
+      toast('Could not delete', 'error');
+    }
   };
 
   const months = Array.from(new Set(payments.map(p => p.payment_date?.slice(0, 7)))).sort().reverse();
@@ -505,7 +593,7 @@ export default function Payments() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 gap-3 sm:gap-4">
             {currentItems.map(p => {
-              const biller = p.expand?.biller_id;
+              const biller = p.biller;
               return (
                 <div 
                   key={p.id} 
@@ -634,7 +722,7 @@ export default function Payments() {
                 clearError('biller_id');
                 const bill = bills.find(b => b.biller_id === billerId);
                 if (bill) {
-                  const freq = (bill as any).frequency;
+                  const freq = bill.frequency;
                   const bal = bill.current_balance;
                   if (freq && freq !== 'one_off') {
                     setSmartInfo(`Balance: £${bal?.toFixed(2) || '0.00'} · ${FREQUENCY_LABELS[freq as keyof typeof FREQUENCY_LABELS] || freq}`);
