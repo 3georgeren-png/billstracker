@@ -45,10 +45,14 @@ export async function checkAndSendAutoSms(
     }
 
     console.log(`📋 ${billsNeedingAttention.length} bills need attention`);
+    
+    // Log bill names for debugging
+    console.log('📋 Bills:', billsNeedingAttention.map(b => `${b.name}: £${b.amount}`).join(', '));
 
     // ✅ Format ALL bills into one message
     const message = formatBulkReminderMessage(billsNeedingAttention);
     console.log('📝 Message:', message);
+    console.log('📝 Message length:', message.length, 'characters');
 
     // Send SMS
     const result = await sendSmsReminder(phone, message);
@@ -63,6 +67,9 @@ export async function checkAndSendAutoSms(
       console.error('❌ Failed to send SMS:', result.error);
       return { sent: false, message: result.error || 'Failed to send' };
     }
+  } catch (error) {
+    console.error('❌ Auto-SMS error:', error);
+    return { sent: false, message: 'Error sending SMS' };
   } finally {
     // Reset the flag
     isSending = false;
