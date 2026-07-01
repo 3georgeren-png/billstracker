@@ -250,12 +250,21 @@ export default function Payments() {
         };
 
         // If there's a receipt file, upload it
-        if (receiptFile) {
-          // For now, just store the filename - you'll need to implement file upload to Supabase Storage
-          updateData.receipt = receiptFile.name;
-          // TODO: Upload file to Supabase Storage
-          // const { data, error } = await supabase.storage.from('receipts').upload(`${editing.id}/${receiptFile.name}`, receiptFile);
-        }
+       // If there's a receipt file, upload it
+if (receiptFile) {
+  const filePath = `${editing.id}/${receiptFile.name}`;
+  const { data, error } = await supabase.storage
+    .from('receipts')
+    .upload(filePath, receiptFile);
+
+  if (error) {
+    console.error('Error uploading receipt:', error);
+    toast('Failed to upload receipt', 'error');
+  } else {
+    // Update the payment with the receipt filename
+    updateData.receipt = receiptFile.name;
+  }
+}
 
         await supabase
           .from('payments')
@@ -314,10 +323,20 @@ export default function Payments() {
             updated: new Date().toISOString(),
           };
 
-          if (receiptFile) {
-            paymentData.receipt = receiptFile.name;
-            // TODO: Upload file to Supabase Storage
-          }
+          // If there's a receipt file, upload it
+if (receiptFile) {
+  const filePath = `${newPayment.id}/${receiptFile.name}`;
+  const { error } = await supabase.storage
+    .from('receipts')
+    .upload(filePath, receiptFile);
+
+  if (error) {
+    console.error('Error uploading receipt:', error);
+    toast('Failed to upload receipt', 'error');
+  } else {
+    paymentData.receipt = receiptFile.name;
+  }
+}
 
           await supabase
             .from('payments')
