@@ -14,6 +14,15 @@ export async function POST(request: Request) {
       );
     }
 
+    // ✅ Check if credentials are configured
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+      console.warn('⚠️ Email credentials not configured in Vercel. SMS disabled.');
+      return NextResponse.json({
+        success: false,
+        error: 'SMS service not configured. Please add EMAIL_USER and EMAIL_PASSWORD to environment variables.'
+      });
+    }
+
     console.log('📧 Sending email to trigger Zapier...');
     console.log('📝 Message:', message);
 
@@ -30,12 +39,11 @@ export async function POST(request: Request) {
     });
 
     // Send email - Zapier uses SUBJECT to find the email
-    // But SMS content comes from BODY
     const info = await transporter.sendMail({
       from: `"Bill Reminder" <${process.env.EMAIL_USER}>`,
       to: process.env.EMAIL_USER,
-      subject: 'Bill Reminder', // ← Simple subject for Zapier trigger
-      text: cleanMessage, // ← Full message goes here (SMS content)
+      subject: 'Bill Reminder',
+      text: cleanMessage,
     });
 
     console.log('✅ Email sent! Zapier will forward as SMS.');
