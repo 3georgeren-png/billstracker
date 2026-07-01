@@ -1,12 +1,11 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { Lock, Delete } from 'lucide-react';
-import pb from '@/lib/supabase-adapter';
+import { supabase } from '@/lib/supabase';
 
 const PIN_VERIFIED_KEY = 'bt_pin_verified';
 const PIN_HASH_KEY = 'bt_pin_hash';
 const SESSION_DURATION = 8 * 60 * 60 * 1000; // 8 hours
-const PB_URL = 'http://192.168.1.19:8090';
 
 function isSessionValid(): boolean {
   try {
@@ -55,95 +54,122 @@ export function PinLock({ children }: { children: React.ReactNode }) {
     checkPinStatus();
   }, []);
 
-  // ✅ Get PIN from pin_auth collection (public access)
+  // ✅ Get PIN from Supabase pin_auth table
   const getPinFromDB = async (): Promise<string | null> => {
     try {
-      // Try PocketBase SDK first
-      try {
-        const records = await pb.collection('pin_auth').getFullList({
-          filter: 'enabled = true',
-          limit: 1,
-        });
-        
-        if (records.length > 0) {
-          console.log('✅ PIN found in database via SDK');
-          return records[0].pin_hash;
-        }
-      } catch (sdkErr: any) {
-        console.log('📋 SDK error, trying direct fetch:', sdkErr.message);
-      }
+      const { data, error } = await supabase
+        .from('pin_auth')
+        .select('pin_hash')
+        .eq('enabled', true)
+        .limit(1)
+        .single();
 
-      // Fallback: Direct fetch (public access)
-      const response = await fetch(`${PB_URL}/api/collections/pin_auth/records?filter=enabled=true&limit=1`);
-      
-      if (!response.ok) {
-        console.log('❌ Direct fetch failed:', response.status);
+      if (error) {
+        console.log('📋 No PIN found in Supabase:', error.message);
         return null;
       }
-      
-      const data = await response.json();
-      
-      if (data.items && data.items.length > 0) {
-        console.log('✅ PIN found in database via direct fetch');
-        return data.items[0].pin_hash;
+
+      if (data) {
+        console.log('✅ PIN found in Supabase');
+        return data.pin_hash;
       }
-      
+
       return null;
     } catch (error) {
-      console.error('❌ Error getting PIN:', error);
+      console.error('❌ Error getting PIN from Supabase:', error);
       return null;
     }
   };
 
-  // ✅ Save PIN to pin_auth collection
+  // ✅ Save PIN to Supabase pin_auth table
   const savePinToDB = async (hashedPin: string): Promise<boolean> => {
     try {
       // Check if PIN already exists
-      const existing = await pb.collection('pin_auth').getFullList({
-        filter: 'enabled = true',
-        limit: 1,
-      });
+      const { data: existing, error: checkError } = await supabase
+        .from('pin_auth')
+        .select('id')
+        .eq('enabled', true)
+        .limit(1);
 
-      if (existing.length > 0) {
+      if (checkError && checkError.code !== 'PGRST116') {
+        console.error('Error checking existing PIN:', checkError);
+        return false;
+      }
+
+      if (existing && existing.length > 0) {
         // Update existing
-        await pb.collection('pin_auth').update(existing[0].id, {
-          pin_hash: hashedPin,
-          enabled: true,
-        });
-        console.log('✅ PIN updated in database');
+        const { error: updateError } = await supabase
+          .from('pin_auth')
+          .update({
+            pin_hash: hashedPin,
+            enabled: true,
+            updated: new Date().toISOString(),
+          })
+          .eq('id', existing[0].id);
+
+        if (updateError) {
+          console.error('Error updating PIN:', updateError);
+          return false;
+        }
+        console.log('✅ PIN updated in Supabase');
       } else {
         // Create new
-        await pb.collection('pin_auth').create({
-          pin_hash: hashedPin,
-          enabled: true,
-          device_name: navigator.userAgent || 'Unknown',
-        });
-        console.log('✅ PIN created in database');
+        const { error: createError } = await supabase
+          .from('pin_auth')
+          .insert([{
+            pin_hash: hashedPin,
+            enabled: true,
+            device_name: navigator.userAgent || 'Unknown',
+            created: new Date().toISOString(),
+            updated: new Date().toISOString(),
+          }]);
+
+        if (createError) {
+          console.error('Error creating PIN:', createError);
+          return false;
+        }
+        console.log('✅ PIN created in Supabase');
       }
       return true;
     } catch (error) {
-      console.error('❌ Error saving PIN to database:', error);
+      console.error('❌ Error saving PIN to Supabase:', error);
       return false;
     }
   };
 
-  // ✅ Remove PIN from pin_auth collection
+  // ✅ Remove PIN from Supabase pin_auth table
   const removePinFromDB = async (): Promise<boolean> => {
     try {
-      const records = await pb.collection('pin_auth').getFullList({
-        filter: 'enabled = true',
-        limit: 1,
-      });
+      const { data: existing, error: checkError } = await supabase
+        .from('pin_auth')
+        .select('id')
+        .eq('enabled', true)
+        .limit(1);
 
-      if (records.length > 0) {
-        await pb.collection('pin_auth').update(records[0].id, {
-          enabled: false,
-        });
-        console.log('✅ PIN disabled in database');
+      if (checkError) {
+        console.error('Error checking existing PIN:', checkError);
+        return false;
+      }
+
+      if (existing && existing.length > 0) {
+        const { error: updateError } = await supabase
+          .from('pin_auth')
+          .update({
+            enabled: false,
+            updated: new Date().toISOString(),
+          })
+          .eq('id', existing[0].id);
+
+        if (updateError) {
+          console.error('Error disabling PIN:', updateError);
+          return false;
+        }
+        console.log('✅ PIN disabled in Supabase');
+        return true;
       }
       return true;
     } catch (error) {
-      console.error('❌ Error disabling PIN:', error);
+      console.error('Error disabling PIN:', error);
       return false;
     }
   };
