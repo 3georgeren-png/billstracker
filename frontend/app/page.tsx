@@ -118,6 +118,24 @@ export default function Dashboard() {
   const [quickPayError, setQuickPayError] = useState('');
   const [viewingReceipt, setViewingReceipt] = useState<Payment | null>(null);
 
+  // ✅ THEME DETECTION
+  const [isDark, setIsDark] = useState(true);
+
+  useEffect(() => {
+    // Check initial theme
+    const theme = document.documentElement.getAttribute('data-theme');
+    setIsDark(theme !== 'light');
+
+    // Listen for theme changes
+    const observer = new MutationObserver(() => {
+      const currentTheme = document.documentElement.getAttribute('data-theme');
+      setIsDark(currentTheme !== 'light');
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+    return () => observer.disconnect();
+  }, []);
+
   // Budget state
   const [budgetModalOpen, setBudgetModalOpen] = useState(false);
   const [editingBudget, setEditingBudget] = useState<any>(null);
@@ -442,6 +460,16 @@ async function load() {
 
   const upcomingCount = upcomingBills.length;
 
+  // ✅ Badge style based on theme
+  const badgeStyle = {
+    background: isDark 
+      ? 'rgba(51, 65, 85, 0.5)' 
+      : 'linear-gradient(135deg, rgb(217, 119, 6), rgb(234, 88, 12))',
+    color: isDark ? '#94a3b8' : '#ffffff',
+    border: isDark ? '1px solid rgba(71, 85, 105, 0.5)' : 'none',
+    boxShadow: isDark ? 'none' : '0 2px 8px rgba(217, 119, 6, 0.3)'
+  };
+
   return (
     <>
       <div className="space-y-4 sm:space-y-6 md:space-y-8 w-full max-w-full pt-3 sm:pt-4 pb-20 sm:pb-6 px-1 sm:px-0">
@@ -588,7 +616,10 @@ async function load() {
             <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
               <Calendar size={14} className="sm:w-4 sm:h-4 text-sky-400 shrink-0" />
               <h2 className="font-semibold text-slate-100 text-[11px] sm:text-sm truncate">Upcoming Bills</h2>
-              <span className="text-[8px] sm:text-[10px] bg-slate-700/50 px-1.5 sm:px-2 py-0.5 rounded-full text-slate-400 shrink-0">
+              <span 
+                className="text-[8px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-full shrink-0 font-medium"
+                style={badgeStyle}
+              >
                 {upcomingBills.length}
               </span>
             </div>
@@ -723,7 +754,10 @@ async function load() {
               <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
                 <Bell size={14} className="sm:w-4 sm:h-4 text-amber-400 shrink-0" />
                 <h2 className="font-semibold text-slate-100 text-[11px] sm:text-sm truncate">Reminders</h2>
-                <span className="text-[8px] sm:text-[10px] bg-slate-700/50 px-1.5 sm:px-2 py-0.5 rounded-full text-slate-400 shrink-0">
+                <span 
+                  className="text-[8px] sm:text-[10px] px-1.5 sm:px-2 py-0.5 rounded-full shrink-0 font-medium"
+                  style={badgeStyle}
+                >
                   {reminders.length}
                 </span>
               </div>
