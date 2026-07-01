@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import pb, { Biller, Bill } from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
 import { FREQUENCY_LABELS, Frequency } from '@/lib/smartPayment';
 import { useSearchParams } from 'next/navigation';
 import { useRef } from 'react';
@@ -38,14 +38,14 @@ const daysUntilDate = (dateStr: string): number | null => {
   return Math.ceil((target.getTime() - today.getTime()) / 86400000);
 };
 
-const emptyBill: Partial<Bill> = {
+const emptyBill: Partial<any> = {
   biller_id: '', current_balance: 0, last_bill_date: '',
   last_bill_amount: 0, next_bill_date: '', notes: '', frequency: 'monthly'
 };
 const ITEMS_PER_PAGE = 12;
 
 /* ─── status config ──────────────────────────────────────── */
-const getStatus = (bill: Bill) => {
+const getStatus = (bill: any) => {
   const days = daysUntilDate(bill.next_bill_date);
   const paid = bill.current_balance === 0;
   if (paid) return { label: 'Paid', short: 'Paid', icon: CheckCircle, accent: 'var(--color-success)', border: 'var(--color-success)', bg: 'var(--color-success-bg)', text: 'var(--color-success)', bar: 'border-l-emerald-500', barColor: '#10b981' };
@@ -61,7 +61,7 @@ const getStatus = (bill: Bill) => {
    BILL CARD
 ═══════════════════════════════════════════════════════════ */
 interface CardProps {
-  bill: Bill;
+  bill: any;
   prediction?: any;
   highlighted: boolean;
   highlightRef?: React.RefObject<HTMLDivElement>;
@@ -74,13 +74,12 @@ interface CardProps {
 function BillCard({ bill: b, prediction, highlighted, highlightRef, onMarkPaid, onRecreateReminder, onEdit, onDelete }: CardProps) {
   const status = getStatus(b);
   const StatusIcon = status.icon;
-  const biller = b.expand?.biller_id;
+  const biller = b.biller;
   const isPaid = b.current_balance === 0;
   const isRecurring = b.frequency && b.frequency !== 'one_off';
   const showLast = b.last_bill_amount > 0;
 
   return (
-  // In your BillCard component, keep it as:
 <div
   ref={highlighted ? highlightRef : undefined}
   className={`bill-card ${status.bar} ${highlighted ? 'highlighted highlight-pulse' : ''}`}
@@ -176,12 +175,12 @@ function BillCard({ bill: b, prediction, highlighted, highlightRef, onMarkPaid, 
    PAGE
 ═══════════════════════════════════════════════════════════ */
 export default function Bills() {
-  const [bills, setBills] = useState<Bill[]>([]);
-  const [filtered, setFiltered] = useState<Bill[]>([]);
-  const [billers, setBillers] = useState<Biller[]>([]);
+  const [bills, setBills] = useState<any[]>([]);
+  const [filtered, setFiltered] = useState<any[]>([]);
+  const [billers, setBillers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Partial<Bill>>(emptyBill);
+  const [editing, setEditing] = useState<Partial<any>>(emptyBill);
   const [saving, setSaving] = useState(false);
   const { errors, setError, clearError, clearAll } = useFormErrors();
   const [highlighted, setHighlighted] = useState<string | null>(null);
@@ -203,39 +202,62 @@ export default function Bills() {
   const load = async () => {
     setLoading(true);
     try {
-      const [bi, bl] = await Promise.all([
-        pb.collection('bills').getFullList<Bill>({ expand: 'biller_id', sort: 'next_bill_date' }),
-        pb.collection('billers').getFullList<Biller>({ sort: 'name', filter: 'is_active=true' }),
-      ]);
-      setBills(bi);
-      setBillers(bl);
-      applyFilters(bi);
-      await loadPredictions(bi);
+      // Load bills with biller info
+      const { data: billsData, error: billsError } = await supabase
+        .from('bills')
+        .select(`
+          *,
+          biller:billers(id, name, category, is_active)
+        `)
+        .order('next_bill_date', { ascending: true, nullsFirst: true });
+
+      if (billsError) throw billsError;
+
+      // Load billers
+      const { data: billersData, error: billersError } = await supabase
+        .from('billers')
+        .select('*')
+        .eq('is_active', true)
+        .order('name');
+
+      if (billersError) throw billersError;
+
+      setBills(billsData || []);
+      setBillers(billersData || []);
+      applyFilters(billsData || []);
+      await loadPredictions(billsData || []);
+      
       if (highlightId) {
-        const found = bi.find(b => b.id === highlightId);
+        const found = (billsData || []).find(b => b.id === highlightId);
         if (found) {
           setHighlighted(highlightId);
           setTimeout(() => highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
           setTimeout(() => setHighlighted(null), 3500);
         }
       }
-    } catch (e) { console.error(e); }
+    } catch (e) { 
+      console.error('Error loading bills:', e);
+      toast('Failed to load bills', 'error');
+    }
     finally { setLoading(false); }
   };
 
-  const loadPredictions = async (list: Bill[]) => {
+  const loadPredictions = async (list: any[]) => {
     const preds: Record<string, any> = {};
     for (const bill of list) {
       if (bill.frequency && bill.frequency !== 'one_off' && bill.current_balance > 0) {
-        try { const p = await predictBillAmount(bill.id); if (p) preds[bill.id] = p; } catch {}
+        try { 
+          const p = await predictBillAmount(bill.id); 
+          if (p) preds[bill.id] = p; 
+        } catch {}
       }
     }
     setPredictions(preds);
   };
 
-  const applyFilters = (data: Bill[]) => {
+  const applyFilters = (data: any[]) => {
     let f = [...data];
-    if (selectedCategory !== 'all') f = f.filter(b => b.expand?.biller_id?.category === selectedCategory);
+    if (selectedCategory !== 'all') f = f.filter(b => b.biller?.category === selectedCategory);
     if (filterStatus !== 'all') f = f.filter(b => {
       const days = daysUntilDate(b.next_bill_date);
       const paid = b.current_balance === 0;
@@ -247,13 +269,13 @@ export default function Bills() {
     });
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      f = f.filter(b => b.expand?.biller_id?.name?.toLowerCase().includes(q) || b.notes?.toLowerCase().includes(q));
+      f = f.filter(b => b.biller?.name?.toLowerCase().includes(q) || b.notes?.toLowerCase().includes(q));
     }
     f.sort((a, b) => {
       let cmp = 0;
       if (sortBy === 'date') cmp = new Date(a.next_bill_date).getTime() - new Date(b.next_bill_date).getTime();
       if (sortBy === 'amount') cmp = (a.current_balance || 0) - (b.current_balance || 0);
-      if (sortBy === 'name') cmp = (a.expand?.biller_id?.name || '').localeCompare(b.expand?.biller_id?.name || '');
+      if (sortBy === 'name') cmp = (a.biller?.name || '').localeCompare(b.biller?.name || '');
       return sortOrder === 'asc' ? cmp : -cmp;
     });
     setFiltered(f);
@@ -262,52 +284,100 @@ export default function Bills() {
   };
 
   useEffect(() => { applyFilters(bills); }, [bills, filterStatus, searchQuery, sortBy, sortOrder, selectedCategory]);
-  useEffect(() => { load(); pb.collection('bills').subscribe('*', load); return () => { pb.collection('bills').unsubscribe(); }; }, []);
-// Add this effect to ensure highlighting works when bills update
-// Add this console log to debug
-useEffect(() => {
-  console.log('🔍 Highlight ID from URL:', highlightId);
-  console.log('🔍 Bills loaded:', bills.length);
-  
-  if (highlightId && bills.length > 0) {
-    const found = bills.find(b => b.id === highlightId);
-    console.log('🔍 Found bill:', found);
-    if (found) {
-      setHighlighted(highlightId);
-      setTimeout(() => {
-        highlightRef.current?.scrollIntoView({ 
-          behavior: 'smooth', 
-          block: 'center' 
-        });
-      }, 500);
-      setTimeout(() => setHighlighted(null), 5000);
+  useEffect(() => { load(); }, []);
+
+  // Set up realtime subscription
+  useEffect(() => {
+    const channel = supabase
+      .channel('bills-changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'bills' },
+        () => load()
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  // Highlight effect
+  useEffect(() => {
+    if (highlightId && bills.length > 0) {
+      const found = bills.find(b => b.id === highlightId);
+      if (found) {
+        setHighlighted(highlightId);
+        setTimeout(() => {
+          highlightRef.current?.scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center' 
+          });
+        }, 500);
+        setTimeout(() => setHighlighted(null), 5000);
+      }
     }
-  }
-}, [bills, highlightId]);
+  }, [bills, highlightId]);
+
   /* ── actions ── */
   const markAsPaid = async (id: string) => {
-    try { await pb.collection('bills').update(id, { current_balance: 0 }); toast('✅ Marked as paid'); load(); }
+    try { 
+      await supabase
+        .from('bills')
+        .update({ current_balance: 0, updated: new Date().toISOString() })
+        .eq('id', id);
+      toast('✅ Marked as paid'); 
+      load(); 
+    }
     catch { toast('Failed to mark as paid', 'error'); }
   };
 
   const recreateReminder = async (billId: string, billerId: string, dueDate: string) => {
     try {
-      const old = await pb.collection('reminders').getFullList({ filter: `biller_id="${billerId}" && status="pending"` });
-      await Promise.all(old.map(r => pb.collection('reminders').delete(r.id)));
+      // Delete old pending reminders for this biller
+      const { data: oldReminders } = await supabase
+        .from('reminders')
+        .select('id')
+        .eq('biller_id', billerId)
+        .eq('status', 'pending');
+
+      if (oldReminders && oldReminders.length > 0) {
+        await supabase
+          .from('reminders')
+          .delete()
+          .in('id', oldReminders.map(r => r.id));
+      }
+
+      // Create new reminder
       const rd = new Date(dueDate);
       rd.setDate(rd.getDate() - 3);
-      const biller = await pb.collection('billers').getOne(billerId);
-      const bill = await pb.collection('bills').getOne(billId);
-      await pb.collection('reminders').create({
-        biller_id: billerId,
-        reminder_date: rd.toISOString().split('T')[0],
-        type: 'payment_due',
-        message: `${biller.name} — ${fmt(bill.last_bill_amount || 0)} due ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`,
-        status: 'pending',
-      });
+      
+      // Get biller and bill details
+      const { data: biller } = await supabase
+        .from('billers')
+        .select('name')
+        .eq('id', billerId)
+        .single();
+
+      const { data: bill } = await supabase
+        .from('bills')
+        .select('last_bill_amount')
+        .eq('id', billId)
+        .single();
+
+      await supabase
+        .from('reminders')
+        .insert([{
+          biller_id: billerId,
+          reminder_date: rd.toISOString().split('T')[0],
+          type: 'payment_due',
+          message: `${biller?.name || 'Bill'} — ${fmt(bill?.last_bill_amount || 0)} due ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`,
+          status: 'pending',
+        }]);
+
       toast('✅ Reminder recreated');
       load();
-    } catch { toast('Failed to recreate reminder', 'error'); }
+    } catch (error) {
+      console.error('Error recreating reminder:', error);
+      toast('Failed to recreate reminder', 'error');
+    }
   };
 
   const save = async () => {
@@ -318,29 +388,79 @@ useEffect(() => {
     if (!valid) return;
     setSaving(true);
     try {
-      if (editing.id) { await pb.collection('bills').update(editing.id, editing); toast('Bill updated'); } else {
-        await pb.collection('bills').create(editing);
+      if (editing.id) {
+        await supabase
+          .from('bills')
+          .update({
+            biller_id: editing.biller_id,
+            current_balance: editing.current_balance || 0,
+            last_bill_date: editing.last_bill_date,
+            last_bill_amount: editing.last_bill_amount || 0,
+            next_bill_date: editing.next_bill_date,
+            notes: editing.notes,
+            frequency: editing.frequency || 'monthly',
+            updated: new Date().toISOString(),
+          })
+          .eq('id', editing.id);
+        toast('Bill updated'); 
+      } else {
+        await supabase
+          .from('bills')
+          .insert([{
+            biller_id: editing.biller_id,
+            current_balance: editing.current_balance || 0,
+            last_bill_date: editing.last_bill_date,
+            last_bill_amount: editing.last_bill_amount || 0,
+            next_bill_date: editing.next_bill_date,
+            notes: editing.notes,
+            frequency: editing.frequency || 'monthly',
+            created: new Date().toISOString(),
+            updated: new Date().toISOString(),
+          }]);
         toast('Bill added');
+        
+        // Create reminder
         if (editing.next_bill_date) {
-          try { await pb.collection('reminders').create({ biller_id: editing.biller_id, reminder_date: editing.next_bill_date, type: 'payment_due', message: 'Bill due', status: 'pending' }); } catch {}
+          try {
+            await supabase
+              .from('reminders')
+              .insert([{
+                biller_id: editing.biller_id,
+                reminder_date: editing.next_bill_date,
+                type: 'payment_due',
+                message: 'Bill due',
+                status: 'pending',
+              }]);
+          } catch {}
         }
       }
       setOpen(false);
       setEditing(emptyBill);
       clearAll();
       load();
-    } catch { toast('Something went wrong', 'error'); }
+    } catch (error) {
+      console.error('Error saving bill:', error);
+      toast('Something went wrong', 'error');
+    }
     finally { setSaving(false); }
   };
 
   const remove = async (id: string) => {
-    try { await pb.collection('bills').delete(id); toast('Record deleted'); setDeleteId(null); load(); }
+    try { 
+      await supabase
+        .from('bills')
+        .delete()
+        .eq('id', id);
+      toast('Record deleted'); 
+      setDeleteId(null); 
+      load(); 
+    }
     catch { toast('Could not delete', 'error'); }
   };
 
   const resetFilters = () => { setFilterStatus('all'); setSearchQuery(''); setSortBy('date'); setSortOrder('asc'); setSelectedCategory('all'); };
   const hasActiveFilters = !!(searchQuery || filterStatus !== 'all' || selectedCategory !== 'all');
-  const categories = ['all', ...new Set(bills.map(b => b.expand?.biller_id?.category).filter(Boolean))];
+  const categories = ['all', ...new Set(bills.map(b => b.biller?.category).filter(Boolean))];
   const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
   const pageItems = filtered.slice(startIndex, startIndex + ITEMS_PER_PAGE);
 
@@ -362,9 +482,9 @@ useEffect(() => {
               style={{
                 backgroundColor: 'var(--color-surface)',
                 borderColor: 'var(--color-border)',
-                marginTop: '8px', /* Added margin-top to push header down */
+                marginTop: '8px',
                 position: 'relative',
-                zIndex: 10 /* Ensure header stays above sidebar toggle */
+                zIndex: 10
               }}
             >
               <div className="flex items-center gap-3">
@@ -458,7 +578,7 @@ useEffect(() => {
                       { value: 'all', label: 'All Categories', count: bills.length },
                       ...categories.filter(c => c !== 'all').map(cat => ({
                         value: cat, label: cat,
-                        count: bills.filter(b => b.expand?.biller_id?.category === cat).length
+                        count: bills.filter(b => b.biller?.category === cat).length
                       }))
                     ]
                   },
