@@ -117,58 +117,96 @@ export default function Dashboard() {
   const [reminderSaving, setReminderSaving] = useState(false);
   const [quickPayError, setQuickPayError] = useState('');
   const [viewingReceipt, setViewingReceipt] = useState<Payment | null>(null);
-  
+
   // Budget state
   const [budgetModalOpen, setBudgetModalOpen] = useState(false);
   const [editingBudget, setEditingBudget] = useState<any>(null);
   const { budgets, loadBudgets, saveBudget, deleteBudget, getCategorySpending, getBudgetProgress } = useBudget();
 
-  const { 
-    permission, 
-    requestPermission, 
+  const {
+    permission,
+    requestPermission,
     checkUpcomingBills,
     notifyPaymentRecorded
   } = useAppNotifications();
 
-  // Load function
+  // **FIXED & UPGRADED LOAD FUNCTION**
   async function load() {
     setLoading(true);
     try {
-      const [b, bi, p, d, r] = await Promise.all([
-        getBillers(),
-        getBills(),
-        getPayments(),
-        getDirectDebits(),
-        getReminders(),
-      ]);
-      
-      setBillers(b); 
-      setBills(bi); 
-      setPayments(p); 
-      setDDs(d); 
-      setReminders(r);
-      
-      await loadBudgets();
-      
-      if (permission === 'granted') {
-        checkUpcomingBills(bi, daysUntil);
-      }
-      
-      await checkAndNotify(r);
+      console.log('📊 Dashboard: Starting data load...');
 
-      // ── Auto-SMS Check ──
+      // Fetch data from services with proper error handling
+      const [b, bi, p, d, r] = await Promise.all([
+        getBillers().catch(err => {
+          console.error('❌ Billers service error:', err);
+          return [];
+        }),
+        getBills().catch(err => {
+          console.error('❌ Bills service error:', err);
+          return [];
+        }),
+        getPayments().catch(err => {
+          console.error('❌ Payments service error:', err);
+          return [];
+        }),
+        getDirectDebits().catch(err => {
+          console.error('❌ DirectDebits service error:', err);
+          return [];
+        }),
+        getReminders().catch(err => {
+          console.error('❌ Reminders service error:', err);
+          return [];
+        }),
+      ]);
+
+      console.log('📊 Data loaded:', {
+        billers: b?.length || 0,
+        bills: bi?.length || 0,
+        payments: p?.length || 0,
+        directDebits: d?.length || 0,
+        reminders: r?.length || 0
+      });
+
+      setBillers(b || []);
+      setBills(bi || []);
+      setPayments(p || []);
+      setDDs(d || []);
+      setReminders(r || []);
+
+      // Load budgets if available
+      try {
+        await loadBudgets();
+      } catch (budgetErr) {
+        console.warn('⚠️ Budgets not loaded:', budgetErr);
+      }
+
+      // Check notifications
+      if (permission === 'granted') {
+        checkUpcomingBills(bi || [], daysUntil);
+      }
+
+      // Check reminders
+      await checkAndNotify(r || []);
+
+      // Auto-SMS Check
       const phone = localStorage.getItem('bt_phone_number');
-      if (phone && bi.length > 0) {
+      if (phone && bi && bi.length > 0) {
         setTimeout(async () => {
-          const result = await checkAndSendAutoSms(bi, daysUntil);
-          if (result.sent) {
-            toast('📱 SMS reminder sent automatically!');
+          try {
+            const result = await checkAndSendAutoSms(bi, daysUntil);
+            if (result.sent) {
+              toast('📱 SMS reminder sent automatically!');
+            }
+          } catch (smsErr) {
+            console.warn('⚠️ SMS check error:', smsErr);
           }
         }, 2000);
       }
 
     } catch (e) {
-      console.error(e);
+      console.error('❌ Critical dashboard load error:', e);
+      toast('Error loading dashboard data', 'error');
     } finally {
       setLoading(false);
     }
@@ -178,51 +216,59 @@ export default function Dashboard() {
   const setupSubscriptions = () => {
     const channels = [];
 
-    const billersChannel = supabase
-      .channel('billers-changes')
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'billers' },
-        () => load()
-      )
-      .subscribe();
+    try {
+      const billersChannel = supabase
+        .channel('billers-changes')
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'billers' },
+          () => load()
+        )
+        .subscribe();
 
-    const billsChannel = supabase
-      .channel('bills-changes')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'bills' },
-        () => load()
-      )
-      .subscribe();
+      const billsChannel = supabase
+        .channel('bills-changes')
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'bills' },
+          () => load()
+        )
+        .subscribe();
 
-    const paymentsChannel = supabase
-      .channel('payments-changes')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'payments' },
-        () => load()
-      )
-      .subscribe();
+      const paymentsChannel = supabase
+        .channel('payments-changes')
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'payments' },
+          () => load()
+        )
+        .subscribe();
 
-    const ddsChannel = supabase
-      .channel('direct_debits-changes')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'direct_debits' },
-        () => load()
-      )
-      .subscribe();
+      const ddsChannel = supabase
+        .channel('direct_debits-changes')
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'direct_debits' },
+          () => load()
+        )
+        .subscribe();
 
-    const remindersChannel = supabase
-      .channel('reminders-changes')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'reminders' },
-        () => load()
-      )
-      .subscribe();
+      const remindersChannel = supabase
+        .channel('reminders-changes')
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'reminders' },
+          () => load()
+        )
+        .subscribe();
 
-    channels.push(billersChannel, billsChannel, paymentsChannel, ddsChannel, remindersChannel);
+      channels.push(billersChannel, billsChannel, paymentsChannel, ddsChannel, remindersChannel);
+    } catch (e) {
+      console.warn('⚠️ Realtime subscriptions setup error:', e);
+    }
 
     return () => {
       channels.forEach(channel => {
-        supabase.removeChannel(channel);
+        try {
+          supabase.removeChannel(channel);
+        } catch (e) {
+          console.warn('⚠️ Channel cleanup error:', e);
+        }
       });
     };
   };
@@ -237,17 +283,19 @@ export default function Dashboard() {
   const getMonthlySpending = () => {
     const monthlyData: Record<string, number> = {};
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    
+
     months.forEach(m => monthlyData[m] = 0);
-    
+
     payments.forEach(p => {
-      const date = new Date(p.payment_date);
-      const month = months[date.getMonth()];
-      if (month) {
-        monthlyData[month] = (monthlyData[month] || 0) + p.amount;
+      if (p?.payment_date) {
+        const date = new Date(p.payment_date);
+        const month = months[date.getMonth()];
+        if (month) {
+          monthlyData[month] = (monthlyData[month] || 0) + (p.amount || 0);
+        }
       }
     });
-    
+
     return months.map(month => ({
       month,
       amount: monthlyData[month] || 0,
@@ -257,13 +305,15 @@ export default function Dashboard() {
   // 📊 Category spending for pie chart
   const getCategorySpendingForChart = () => {
     const categoryData: Record<string, number> = {};
-    
+
     bills.forEach(b => {
-      const billWithBiller = b as any;
-      const category = billWithBiller.biller?.category || 'Other';
-      categoryData[category] = (categoryData[category] || 0) + b.current_balance;
+      if (b) {
+        const billWithBiller = b as any;
+        const category = billWithBiller.biller?.category || 'Other';
+        categoryData[category] = (categoryData[category] || 0) + (b.current_balance || 0);
+      }
     });
-    
+
     return Object.entries(categoryData)
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value)
@@ -272,17 +322,18 @@ export default function Dashboard() {
 
   const monthlyData = getMonthlySpending();
   const categoryData = getCategorySpendingForChart();
-  
+
   const totalBalance = bills.reduce((s, b) => s + (b.current_balance || 0), 0);
   const totalDDs = dds.reduce((s, d) => s + (d.amount || 0), 0);
   const thisMonthPayments = payments.filter(p => {
+    if (!p?.payment_date) return false;
     const d = new Date(p.payment_date);
     const now = new Date();
     return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   }).reduce((s, p) => s + (p.amount || 0), 0);
 
   const upcomingBills = bills
-    .filter(b => b.next_bill_date && daysUntil(b.next_bill_date) !== null && daysUntil(b.next_bill_date)! <= 30)
+    .filter(b => b?.next_bill_date && daysUntil(b.next_bill_date) !== null && daysUntil(b.next_bill_date)! <= 30)
     .sort((a, b) => new Date(a.next_bill_date!).getTime() - new Date(b.next_bill_date!).getTime());
 
   const handleQuickPay = async () => {
@@ -317,19 +368,26 @@ export default function Dashboard() {
       }
       setQuickPay(null);
       setPayAmount('');
-    } catch { toast('Something went wrong', 'error'); }
+    } catch (err) {
+      console.error('Quick pay error:', err);
+      toast('Something went wrong', 'error');
+    }
     finally { setPaying(false); }
   };
 
   const handleQuickReminder = async (bill: Bill, daysBefore: number) => {
     setReminderSaving(true);
     try {
-      const nextDate = new Date(bill.next_bill_date!.replace(' ', 'T'));
+      if (!bill?.next_bill_date) {
+        toast('No bill date available', 'error');
+        return;
+      }
+      const nextDate = new Date(bill.next_bill_date.replace(' ', 'T'));
       nextDate.setDate(nextDate.getDate() - daysBefore);
       const reminderDate = nextDate.toISOString().split('T')[0];
       const billWithBiller = bill as any;
       const billerName = billWithBiller.biller?.name || 'Bill';
-      
+
       const { error } = await supabase
         .from('reminders')
         .insert([{
@@ -339,11 +397,14 @@ export default function Dashboard() {
           message: `${billerName} payment due ${daysBefore === 0 ? 'today' : `in ${daysBefore} day${daysBefore > 1 ? 's' : ''}`}`,
           status: 'pending',
         }]);
-      
+
       if (error) throw error;
       toast(`Reminder set for ${nextDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`);
       setQuickReminder(null);
-    } catch { toast('Could not set reminder', 'error'); }
+    } catch (err) {
+      console.error('Reminder error:', err);
+      toast('Could not set reminder', 'error');
+    }
     finally { setReminderSaving(false); }
   };
 
@@ -354,11 +415,13 @@ export default function Dashboard() {
 
   // ── Dashboard Stats ──
   const overdueCount = bills.filter(b => {
-    const d = daysUntil(b.next_bill_date!);
+    if (!b?.next_bill_date) return false;
+    const d = daysUntil(b.next_bill_date);
     return d !== null && d < 0 && b.current_balance > 0;
   }).length;
 
   const paidThisMonth = payments.filter(p => {
+    if (!p?.payment_date) return false;
     const d = new Date(p.payment_date);
     const now = new Date();
     return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
@@ -369,7 +432,7 @@ export default function Dashboard() {
   return (
     <>
       <div className="space-y-4 sm:space-y-6 md:space-y-8 w-full max-w-full pt-3 sm:pt-4 pb-20 sm:pb-6 px-1 sm:px-0">
-        
+
         {/* ── SECTION 1: Header ── */}
         <div className="flex flex-col xs:flex-row items-start xs:items-center justify-between gap-2 sm:gap-3">
           <div>
@@ -382,8 +445,8 @@ export default function Dashboard() {
               <span>Dashboard</span>
             </h1>
           </div>
-          <button 
-            onClick={() => window.location.reload()} 
+          <button
+            onClick={() => window.location.reload()}
             className="p-1.5 sm:p-2 rounded-xl bg-slate-700/30 hover:bg-slate-700/50 text-slate-400 hover:text-slate-200 transition-colors touch-target"
             title="Refresh"
           >
@@ -455,7 +518,7 @@ export default function Dashboard() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                   <XAxis dataKey="month" stroke="#94a3b8" fontSize={11} tick={{ fill: '#94a3b8' }} />
                   <YAxis stroke="#94a3b8" fontSize={11} tick={{ fill: '#94a3b8' }} tickFormatter={(value) => `£${value}`} />
-                  <Tooltip 
+                  <Tooltip
                     contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#f1f5f9', fontSize: '12px' }}
                     formatter={(value: number) => [`£${value.toFixed(2)}`, 'Spent']}
                     labelStyle={{ color: '#94a3b8' }}
@@ -495,7 +558,7 @@ export default function Dashboard() {
                       ))}
                     </Pie>
                     <Legend wrapperStyle={{ fontSize: '9px', color: '#94a3b8' }} formatter={(value) => <span style={{ color: '#94a3b8' }}>{value}</span>} />
-                    <Tooltip 
+                    <Tooltip
                       contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#f1f5f9', fontSize: '12px' }}
                       formatter={(value: number) => [`£${value.toFixed(2)}`, 'Balance']}
                     />
@@ -538,11 +601,11 @@ export default function Dashboard() {
                 const isPaid = bill.current_balance === 0;
                 const isRecurring = bill.frequency && bill.frequency !== 'one_off';
                 const displayAmount = isPaid && isRecurring ? bill.last_bill_amount : bill.current_balance;
-                
+
                 let statusColor = 'text-emerald-400';
                 let statusBg = 'bg-emerald-500/10';
                 let statusLabel = 'Paid';
-                
+
                 if (!isPaid) {
                   if (days < 0) {
                     statusColor = 'text-red-400';
@@ -578,24 +641,24 @@ export default function Dashboard() {
                       <p className={`text-[11px] sm:text-sm font-semibold ${isPaid && isRecurring ? 'text-slate-500 line-through' : 'text-slate-100'}`}>
                         {fmt(displayAmount)}
                       </p>
-                      
+
                       {(!isPaid || (isRecurring && bill.last_bill_amount > 0 && bill.current_balance === 0)) && (
                         <div className="flex gap-0.5 sm:gap-1">
-                          <button 
-                            onClick={() => { setQuickPay(bill); setPayAmount(String(displayAmount || '')); }} 
+                          <button
+                            onClick={() => { setQuickPay(bill); setPayAmount(String(displayAmount || '')); }}
                             className="p-1 sm:p-1.5 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 transition-colors touch-target"
                             title="Quick pay"
                           >
                             <Zap size={10} className="sm:w-3.5 sm:h-3.5" />
                           </button>
-                          <button 
-                            onClick={() => setQuickReminder(bill)} 
+                          <button
+                            onClick={() => setQuickReminder(bill)}
                             className="p-1 sm:p-1.5 rounded-lg bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 transition-colors touch-target"
                             title="Set reminder"
                           >
                             <Bell size={10} className="sm:w-3.5 sm:h-3.5" />
                           </button>
-                          <button 
+                          <button
                             onClick={async () => {
                               const phone = localStorage.getItem('bt_phone_number');
                               if (!phone) {
@@ -622,8 +685,8 @@ export default function Dashboard() {
                               } else {
                                 toast(result.error || 'Failed to send SMS', 'error');
                               }
-                            }} 
-                            className="p-1 sm:p-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 transition-colors touch-target" 
+                            }}
+                            className="p-1 sm:p-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 transition-colors touch-target"
                             title="Send SMS reminder"
                           >
                             <Smartphone size={10} className="sm:w-3.5 sm:h-3.5" />
@@ -640,7 +703,7 @@ export default function Dashboard() {
 
         {/* ── SECTION 5: Two-Column Split ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4">
-          
+
           {/* Reminders */}
           <div className="card p-3 sm:p-4">
             <div className="flex items-center justify-between mb-3 sm:mb-4">
@@ -717,11 +780,11 @@ export default function Dashboard() {
                           <div className="flex items-center gap-1 sm:gap-1.5 flex-wrap">
                             <p className="text-[11px] sm:text-sm font-medium text-slate-200 truncate max-w-[80px] xs:max-w-[120px] sm:max-w-none">{paymentWithBiller.biller?.name ?? '—'}</p>
                             {p.receipt && (
-                              <button 
-                                onClick={() => setViewingReceipt(p)} 
+                              <button
+                                onClick={() => setViewingReceipt(p)}
                                 className="flex items-center gap-0.5 text-[8px] sm:text-[10px] text-sky-400 hover:text-sky-300 bg-sky-500/10 px-1 sm:px-1.5 py-0.5 rounded-full transition-colors touch-target"
                               >
-                                <Paperclip size={8} className="sm:w-2.5 sm:h-2.5" /> 
+                                <Paperclip size={8} className="sm:w-2.5 sm:h-2.5" />
                                 <span className="hidden xs:inline">Receipt</span>
                               </button>
                             )}
@@ -782,7 +845,7 @@ export default function Dashboard() {
                 const isWarning = budget.status === 'warning';
                 const color = isExceeded ? 'bg-red-500' : isWarning ? 'bg-amber-500' : 'bg-emerald-500';
                 const textColor = isExceeded ? 'text-red-400' : isWarning ? 'text-amber-400' : 'text-emerald-400';
-                
+
                 return (
                   <div key={budget.id} className="bg-slate-700/20 rounded-xl p-2 sm:p-3">
                     <div className="flex flex-wrap items-center justify-between mb-1 gap-1">
@@ -820,7 +883,7 @@ export default function Dashboard() {
                         </div>
                       </div>
                     </div>
-                    
+
                     {/* Progress Bar */}
                     <div className="w-full bg-slate-700 rounded-full h-1 sm:h-1.5 overflow-hidden">
                       <div
@@ -828,7 +891,7 @@ export default function Dashboard() {
                         style={{ width: `${Math.min(budget.percentage, 100)}%` }}
                       />
                     </div>
-                    
+
                     {isExceeded ? (
                       <p className="text-[9px] sm:text-xs text-red-400 mt-1">⚠️ Exceeded by £{(budget.spent - budget.amount).toFixed(2)}</p>
                     ) : (
