@@ -1,5 +1,6 @@
 'use client';
 import { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabase';
 import { 
   Shield, Lock, Info, Trash2, RefreshCw, Check, X, AlertCircle,
   Moon, Sun, Globe, Database, Smartphone, Laptop, ShieldCheck,
@@ -9,7 +10,6 @@ import {
 } from 'lucide-react';
 import { toast } from '@/components/ui/Toaster';
 
-const PB_URL = 'http://192.168.1.19:8090';
 const PIN_HASH_KEY = 'bt_pin_hash';
 
 export default function SettingsPage() {
@@ -21,7 +21,6 @@ export default function SettingsPage() {
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(true);
   const [isSettingPin, setIsSettingPin] = useState(false);
-  const [debugInfo, setDebugInfo] = useState('');
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   
   // SMS Reminders state
@@ -62,30 +61,35 @@ export default function SettingsPage() {
     toast('✅ Phone number saved!');
   };
 
+  // ✅ Check PIN status from Supabase
   const checkPinStatus = async () => {
     try {
       setLoading(true);
-      try {
-        const response = await fetch(`${PB_URL}/api/collections/pin_auth/records?filter=enabled=true&limit=1`);
-        if (!response.ok) {
-          const localPin = localStorage.getItem(PIN_HASH_KEY);
-          setPinEnabled(!!localPin);
-          setLoading(false);
-          return;
-        }
-        const data = await response.json();
-        if (data.items && data.items.length > 0) {
-          setPinEnabled(true);
-          localStorage.setItem(PIN_HASH_KEY, data.items[0].pin_hash);
-        } else {
-          setPinEnabled(false);
-        }
-      } catch (err: any) {
+      const { data, error } = await supabase
+        .from('pin_auth')
+        .select('*')
+        .eq('is_enabled', true)
+        .limit(1);
+
+      if (error) {
+        console.error('Error checking PIN:', error);
+        // Fallback to localStorage
         const localPin = localStorage.getItem(PIN_HASH_KEY);
         setPinEnabled(!!localPin);
+        setLoading(false);
+        return;
+      }
+
+      if (data && data.length > 0) {
+        setPinEnabled(true);
+        localStorage.setItem(PIN_HASH_KEY, data[0].pin_hash);
+      } else {
+        setPinEnabled(false);
       }
     } catch (error) {
-      setPinEnabled(false);
+      console.error('Error in checkPinStatus:', error);
+      const localPin = localStorage.getItem(PIN_HASH_KEY);
+      setPinEnabled(!!localPin);
     } finally {
       setLoading(false);
     }
@@ -100,6 +104,7 @@ export default function SettingsPage() {
     return hash.toString(36);
   };
 
+  // ✅ Save PIN to Supabase
   const savePin = async () => {
     setError('');
     setSuccess('');
@@ -115,59 +120,60 @@ export default function SettingsPage() {
 
     try {
       const hashedPin = hashPin(newPin);
-      const createResponse = await fetch(`${PB_URL}/api/collections/pin_auth/records`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pin_hash: hashedPin,
-          enabled: true,
-          device_name: navigator.userAgent || 'Unknown',
-        })
-      });
 
-      if (createResponse.ok) {
-        localStorage.setItem(PIN_HASH_KEY, hashedPin);
-        setPinEnabled(true);
-        setSuccess('PIN set successfully! ✅');
-        toast('✅ PIN set successfully!');
-        setNewPin('');
-        setConfirmPin('');
-        setIsSettingPin(false);
-        try { localStorage.removeItem('bt_pin_verified'); } catch {}
+      // Check if PIN already exists
+      const { data: existing, error: checkError } = await supabase
+        .from('pin_auth')
+        .select('id')
+        .eq('is_enabled', true)
+        .limit(1);
+
+      if (checkError && checkError.code !== 'PGRST116') {
+        console.error('Error checking existing PIN:', checkError);
+        setError('Database error');
         return;
       }
 
-      const checkResponse = await fetch(`${PB_URL}/api/collections/pin_auth/records?filter=enabled=true&limit=1`);
-      const checkData = await checkResponse.json();
+      let result;
 
-      if (checkData.items && checkData.items.length > 0) {
-        const recordId = checkData.items[0].id;
-        const updateResponse = await fetch(`${PB_URL}/api/collections/pin_auth/records/${recordId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pin_hash: hashedPin, enabled: true })
-        });
+      if (existing && existing.length > 0) {
+        // Update existing
+        result = await supabase
+          .from('pin_auth')
+          .update({
+            pin_hash: hashedPin,
+            is_enabled: true,
+            device_name: navigator.userAgent || 'Unknown',
+            updated: new Date().toISOString(),
+          })
+          .eq('id', existing[0].id);
+      } else {
+        // Create new
+        result = await supabase
+          .from('pin_auth')
+          .insert([{
+            pin_hash: hashedPin,
+            is_enabled: true,
+            device_name: navigator.userAgent || 'Unknown',
+            created: new Date().toISOString(),
+            updated: new Date().toISOString(),
+          }]);
+      }
 
-        if (updateResponse.ok) {
-          localStorage.setItem(PIN_HASH_KEY, hashedPin);
-          setPinEnabled(true);
-          setSuccess('PIN updated successfully! ✅');
-          toast('✅ PIN updated successfully!');
-          setNewPin('');
-          setConfirmPin('');
-          setIsSettingPin(false);
-          try { localStorage.removeItem('bt_pin_verified'); } catch {}
-          return;
-        }
+      if (result.error) {
+        console.error('Error saving PIN:', result.error);
+        setError('Failed to save PIN');
+        return;
       }
 
       localStorage.setItem(PIN_HASH_KEY, hashedPin);
       setPinEnabled(true);
-      setSuccess('PIN saved locally! ✅');
-      toast('PIN saved locally!', 'warning');
+      setSuccess('PIN set successfully! ✅');
+      toast('✅ PIN set successfully!');
       setNewPin('');
       setConfirmPin('');
       setIsSettingPin(false);
+      try { localStorage.removeItem('bt_pin_verified'); } catch {}
       
     } catch (err: any) {
       console.error('Error saving PIN:', err);
@@ -175,18 +181,37 @@ export default function SettingsPage() {
     }
   };
 
+  // ✅ Remove PIN from Supabase
   const removePin = async () => {
     try {
-      const response = await fetch(`${PB_URL}/api/collections/pin_auth/records?filter=enabled=true&limit=1`);
-      const data = await response.json();
+      const { data: existing, error: checkError } = await supabase
+        .from('pin_auth')
+        .select('id')
+        .eq('is_enabled', true)
+        .limit(1);
 
-      if (data.items && data.items.length > 0) {
-        const recordId = data.items[0].id;
-        await fetch(`${PB_URL}/api/collections/pin_auth/records/${recordId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: false })
-        });
+      if (checkError) {
+        console.error('Error checking existing PIN:', checkError);
+        // Fallback: just clear localStorage
+        localStorage.removeItem(PIN_HASH_KEY);
+        localStorage.removeItem('bt_pin_verified');
+        setPinEnabled(false);
+        toast('PIN disabled successfully');
+        return;
+      }
+
+      if (existing && existing.length > 0) {
+        const { error: updateError } = await supabase
+          .from('pin_auth')
+          .update({
+            is_enabled: false,
+            updated: new Date().toISOString(),
+          })
+          .eq('id', existing[0].id);
+
+        if (updateError) {
+          console.error('Error disabling PIN:', updateError);
+        }
       }
       
       localStorage.removeItem(PIN_HASH_KEY);
@@ -198,6 +223,7 @@ export default function SettingsPage() {
       setIsSettingPin(false);
       
     } catch (error) {
+      console.error('Error removing PIN:', error);
       localStorage.removeItem(PIN_HASH_KEY);
       localStorage.removeItem('bt_pin_verified');
       setPinEnabled(false);
@@ -215,13 +241,11 @@ export default function SettingsPage() {
     try {
       const pin = localStorage.getItem(PIN_HASH_KEY);
       const theme = localStorage.getItem('bt_theme');
-      const pbUrl = localStorage.getItem('bt_pb_url');
       
       localStorage.clear();
       
       if (pin) localStorage.setItem(PIN_HASH_KEY, pin);
       if (theme) localStorage.setItem('bt_theme', theme);
-      if (pbUrl) localStorage.setItem('bt_pb_url', pbUrl);
 
       if ('caches' in window) {
         const keys = await caches.keys();
@@ -527,36 +551,6 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* ── Network & Sync ── */}
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4 sm:p-5 mt-4">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ backgroundColor: 'var(--color-accent-bg)' }}>
-              <Wifi size={18} style={{ color: 'var(--color-accent)' }} />
-            </div>
-            <div>
-              <h3 className="font-semibold text-sm" style={{ color: 'var(--color-text)' }}>Access & Sync</h3>
-              <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Connect from any device</p>
-            </div>
-          </div>
-          <div className="space-y-2">
-            <div className="bg-[var(--color-surface-2)] rounded-xl p-3 flex items-center gap-3">
-              <Laptop size={16} style={{ color: 'var(--color-text-dim)' }} />
-              <div>
-                <p className="text-xs font-medium" style={{ color: 'var(--color-text)' }}>Laptop</p>
-                <code className="text-xs" style={{ color: 'var(--color-accent)' }}>http://localhost:3000</code>
-              </div>
-            </div>
-            <div className="bg-[var(--color-surface-2)] rounded-xl p-3 flex items-center gap-3">
-              <Smartphone size={16} style={{ color: 'var(--color-text-dim)' }} />
-              <div>
-                <p className="text-xs font-medium" style={{ color: 'var(--color-text)' }}>Phone / Tablet</p>
-                <code className="text-xs" style={{ color: 'var(--color-accent)' }}>http://192.168.1.19:3000</code>
-                <p className="text-[10px] mt-0.5" style={{ color: 'var(--color-text-dim)' }}>Must be on same WiFi</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
         {/* ── About ── */}
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl p-4 sm:p-5 mt-4">
           <div className="flex items-center gap-3 mb-3">
@@ -573,7 +567,7 @@ export default function SettingsPage() {
               <span>Built with</span>
               <span style={{ color: 'var(--color-accent)' }}>Next.js</span>
               <span>+</span>
-              <span style={{ color: 'var(--color-success)' }}>PocketBase</span>
+              <span style={{ color: 'var(--color-success)' }}>Supabase</span>
             </p>
             <p>PIN synced across all devices</p>
             <p className="text-xs mt-2" style={{ color: 'var(--color-text-dim)' }}>Version 1.0.0</p>
