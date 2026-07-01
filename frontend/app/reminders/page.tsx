@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState, useRef } from 'react';
-import pb, { Biller, Reminder } from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
 import { useNotifications } from '@/hooks/useNotifications';
 import { Modal } from '@/components/ui/Modal';
 import { toast } from '@/components/ui/Toaster';
@@ -16,7 +16,7 @@ import { SwipeToDelete } from '@/components/ui/SwipeToDelete';
 import { Skeleton, SkeletonReminderCard } from '@/components/ui/Skeleton';
 
 const fmt = (n: number) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(n || 0);
-const emptyR: Partial<Reminder> = { biller_id: '', reminder_date: '', type: 'payment_due', message: '', status: 'pending' };
+const emptyR: Partial<any> = { biller_id: '', reminder_date: '', type: 'payment_due', message: '', status: 'pending' };
 const TYPES = ['payment_due','follow_up','review','custom'];
 const typeLabel: Record<string, string> = { 
   payment_due: 'Payment Due', 
@@ -60,12 +60,12 @@ function getStatusConfig(days: number | null, isDone: boolean) {
 }
 
 export default function Reminders() {
-  const [reminders, setReminders] = useState<Reminder[]>([]);
-  const [filteredReminders, setFilteredReminders] = useState<Reminder[]>([]);
-  const [billers, setBillers] = useState<Biller[]>([]);
+  const [reminders, setReminders] = useState<any[]>([]);
+  const [filteredReminders, setFilteredReminders] = useState<any[]>([]);
+  const [billers, setBillers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Partial<Reminder>>(emptyR);
+  const [editing, setEditing] = useState<Partial<any>>(emptyR);
   const [saving, setSaving] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const { sendNotification, permission } = useNotifications();
@@ -83,21 +83,38 @@ export default function Reminders() {
   const load = async () => {
     setLoading(true);
     try {
-      const [r, b] = await Promise.all([
-        pb.collection('reminders').getFullList<Reminder>({ expand: 'biller_id', sort: 'reminder_date' }),
-        pb.collection('billers').getFullList<Biller>({ sort: 'name', filter: 'is_active=true' }),
-      ]);
-      setReminders(r); 
-      setBillers(b);
-      applyFilters(r);
+      // Load reminders with biller info
+      const { data: remindersData, error: remindersError } = await supabase
+        .from('reminders')
+        .select(`
+          *,
+          biller:billers(id, name, category, is_active)
+        `)
+        .order('reminder_date', { ascending: true });
+
+      if (remindersError) throw remindersError;
+
+      // Load billers
+      const { data: billersData, error: billersError } = await supabase
+        .from('billers')
+        .select('*')
+        .eq('is_active', true)
+        .order('name');
+
+      if (billersError) throw billersError;
+
+      setReminders(remindersData || []);
+      setBillers(billersData || []);
+      applyFilters(remindersData || []);
     } catch (error) {
       console.error('Error loading reminders:', error);
+      toast('Failed to load reminders', 'error');
     } finally {
       setLoading(false);
     }
   };
 
-  const applyFilters = (remindersData: Reminder[]) => {
+  const applyFilters = (remindersData: any[]) => {
     let filtered = [...remindersData];
 
     if (filterStatus !== 'all') {
@@ -115,7 +132,7 @@ export default function Reminders() {
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim();
       filtered = filtered.filter(r => 
-        r.expand?.biller_id?.name?.toLowerCase().includes(query) ||
+        r.biller?.name?.toLowerCase().includes(query) ||
         r.message?.toLowerCase().includes(query) ||
         r.type?.toLowerCase().includes(query)
       );
@@ -131,7 +148,7 @@ export default function Reminders() {
           comparison = (a.type || '').localeCompare(b.type || '');
           break;
         case 'biller':
-          comparison = (a.expand?.biller_id?.name || '').localeCompare(b.expand?.biller_id?.name || '');
+          comparison = (a.biller?.name || '').localeCompare(b.biller?.name || '');
           break;
       }
       return sortOrder === 'asc' ? comparison : -comparison;
@@ -146,10 +163,19 @@ export default function Reminders() {
 
   useEffect(() => { 
     load(); 
-    pb.collection('reminders').subscribe('*', load); 
-    return () => { 
-      pb.collection('reminders').unsubscribe(); 
-    }; 
+  }, []);
+
+  // Set up realtime subscription
+  useEffect(() => {
+    const channel = supabase
+      .channel('reminders-changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'reminders' },
+        () => load()
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   const validate = () => {
@@ -188,15 +214,22 @@ export default function Reminders() {
         type: editing.type || 'payment_due',
         message: editing.message?.trim() || '',
         status: editing.status || 'pending',
+        updated: new Date().toISOString(),
       };
 
       if (editing.id) { 
-        await pb.collection('reminders').update(editing.id, data); 
+        await supabase
+          .from('reminders')
+          .update(data)
+          .eq('id', editing.id);
         toast('✅ Reminder updated'); 
-        const biller = await pb.collection('billers').getOne(editing.biller_id || '');
+        const biller = billers.find(b => b.id === editing.biller_id);
         notifyReminderSet(biller?.name || 'Bill', editing.reminder_date || '');
       } else { 
-        await pb.collection('reminders').create(data); 
+        data.created = new Date().toISOString();
+        await supabase
+          .from('reminders')
+          .insert([data]);
         toast('✅ Reminder set');
         
         const today = new Date(); 
@@ -216,16 +249,23 @@ export default function Reminders() {
       clearAll();
       load();
     } catch (error: any) { 
+      console.error('Error saving reminder:', error);
       toast(error?.message || 'Something went wrong', 'error'); 
     } finally { 
       setSaving(false); 
     }
   };
 
-  const markDone = async (r: Reminder) => {
+  const markDone = async (r: any) => {
     try {
       const newStatus = r.status === 'done' ? 'pending' : 'done';
-      await pb.collection('reminders').update(r.id, { status: newStatus });
+      await supabase
+        .from('reminders')
+        .update({ 
+          status: newStatus,
+          updated: new Date().toISOString(),
+        })
+        .eq('id', r.id);
       toast(newStatus === 'done' ? '✅ Marked as done' : '🔄 Marked as pending');
       load();
     } catch {
@@ -235,7 +275,10 @@ export default function Reminders() {
 
   const remove = async (id: string) => {
     try { 
-      await pb.collection('reminders').delete(id); 
+      await supabase
+        .from('reminders')
+        .delete()
+        .eq('id', id);
       toast('Reminder deleted'); 
       setDeleteId(null); 
       load();
@@ -246,24 +289,37 @@ export default function Reminders() {
 
   const recreateReminder = async (billerId: string, dueDate: string) => {
     try {
-      const oldReminders = await pb.collection('reminders').getFullList({
-        filter: `biller_id="${billerId}" && status="pending"`,
-      });
-      await Promise.all(oldReminders.map(r => pb.collection('reminders').delete(r.id)));
+      // Delete old pending reminders for this biller
+      const { data: oldReminders } = await supabase
+        .from('reminders')
+        .select('id')
+        .eq('biller_id', billerId)
+        .eq('status', 'pending');
+
+      if (oldReminders && oldReminders.length > 0) {
+        await supabase
+          .from('reminders')
+          .delete()
+          .in('id', oldReminders.map(r => r.id));
+      }
       
       const reminderDate = new Date(dueDate);
       reminderDate.setDate(reminderDate.getDate() - 3);
       const reminderDateStr = reminderDate.toISOString().split('T')[0];
       
-      const biller = await pb.collection('billers').getOne(billerId);
+      const biller = billers.find(b => b.id === billerId);
       
-      await pb.collection('reminders').create({
-        biller_id: billerId,
-        reminder_date: reminderDateStr,
-        type: 'payment_due',
-        message: `${biller.name} - Payment due on ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`,
-        status: 'pending',
-      });
+      await supabase
+        .from('reminders')
+        .insert([{
+          biller_id: billerId,
+          reminder_date: reminderDateStr,
+          type: 'payment_due',
+          message: `${biller?.name || 'Bill'} - Payment due on ${new Date(dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`,
+          status: 'pending',
+          created: new Date().toISOString(),
+          updated: new Date().toISOString(),
+        }]);
       
       toast('✅ Reminder recreated');
       load();
@@ -570,7 +626,7 @@ export default function Reminders() {
             {filteredReminders.map(r => {
               const days = daysUntil(r.reminder_date);
               const isDone = r.status === 'done';
-              const biller = r.expand?.biller_id;
+              const biller = r.biller;
               const statusConfig = getStatusConfig(days, isDone);
               const StatusIcon = statusConfig.icon;
               const isUrgent = days !== null && days <= 2 && !isDone;
