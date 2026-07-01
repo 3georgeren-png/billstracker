@@ -131,86 +131,99 @@ export default function Dashboard() {
   } = useAppNotifications();
 
   // **FIXED & UPGRADED LOAD FUNCTION**
-  async function load() {
-    setLoading(true);
-    try {
-      console.log('📊 Dashboard: Starting data load...');
+async function load() {
+  setLoading(true);
+  try {
+    console.log('📊 Dashboard: Starting data load...');
 
-      // Fetch data from services with proper error handling
-      const [b, bi, p, d, r] = await Promise.all([
-        getBillers().catch(err => {
-          console.error('❌ Billers service error:', err);
-          return [];
-        }),
-        getBills().catch(err => {
-          console.error('❌ Bills service error:', err);
-          return [];
-        }),
-        getPayments().catch(err => {
-          console.error('❌ Payments service error:', err);
-          return [];
-        }),
-        getDirectDebits().catch(err => {
-          console.error('❌ DirectDebits service error:', err);
-          return [];
-        }),
-        getReminders().catch(err => {
-          console.error('❌ Reminders service error:', err);
-          return [];
-        }),
-      ]);
+    // Fetch billers
+    const billersData = await getBillers().catch(err => {
+      console.error('❌ Billers service error:', err);
+      return [];
+    });
 
-      console.log('📊 Data loaded:', {
-        billers: b?.length || 0,
-        bills: bi?.length || 0,
-        payments: p?.length || 0,
-        directDebits: d?.length || 0,
-        reminders: r?.length || 0
-      });
+    // ✅ Fetch bills with biller data directly from Supabase
+    const { data: billsData, error: billsError } = await supabase
+      .from('bills')
+      .select(`
+        *,
+        biller:billers(id, name, category)
+      `)
+      .order('next_bill_date', { ascending: true, nullsFirst: true });
 
-      setBillers(b || []);
-      setBills(bi || []);
-      setPayments(p || []);
-      setDDs(d || []);
-      setReminders(r || []);
-
-      // Load budgets if available
-      try {
-        await loadBudgets();
-      } catch (budgetErr) {
-        console.warn('⚠️ Budgets not loaded:', budgetErr);
-      }
-
-      // Check notifications
-      if (permission === 'granted') {
-        checkUpcomingBills(bi || [], daysUntil);
-      }
-
-      // Check reminders
-      await checkAndNotify(r || []);
-
-      // Auto-SMS Check
-      const phone = localStorage.getItem('bt_phone_number');
-      if (phone && bi && bi.length > 0) {
-        setTimeout(async () => {
-          try {
-            const result = await checkAndSendAutoSms(bi, daysUntil);
-            if (result.sent) {
-              toast('📱 SMS reminder sent automatically!');
-            }
-          } catch (smsErr) {
-            console.warn('⚠️ SMS check error:', smsErr);
-          }
-        }, 2000);
-      }
-
-    } catch (e) {
-      console.error('❌ Critical dashboard load error:', e);
-      toast('Error loading dashboard data', 'error');
-    } finally {
-      setLoading(false);
+    if (billsError) {
+      console.error('❌ Bills error:', billsError);
     }
+
+    // Fetch payments
+    const paymentsData = await getPayments().catch(err => {
+      console.error('❌ Payments service error:', err);
+      return [];
+    });
+
+    // Fetch direct debits
+    const ddsData = await getDirectDebits().catch(err => {
+      console.error('❌ DirectDebits service error:', err);
+      return [];
+    });
+
+    // Fetch reminders
+    const remindersData = await getReminders().catch(err => {
+      console.error('❌ Reminders service error:', err);
+      return [];
+    });
+
+    console.log('📊 Data loaded:', {
+      billers: billersData?.length || 0,
+      bills: billsData?.length || 0,
+      payments: paymentsData?.length || 0,
+      directDebits: ddsData?.length || 0,
+      reminders: remindersData?.length || 0
+    });
+
+    setBillers(billersData || []);
+    setBills(billsData || []);
+    setPayments(paymentsData || []);
+    setDDs(ddsData || []);
+    setReminders(remindersData || []);
+
+    // Load budgets if available
+    try {
+      await loadBudgets();
+    } catch (budgetErr) {
+      console.warn('⚠️ Budgets not loaded:', budgetErr);
+    }
+
+    // Check notifications
+    if (permission === 'granted') {
+      checkUpcomingBills(billsData || [], daysUntil);
+    }
+
+    // Check reminders
+    await checkAndNotify(remindersData || []);
+
+    // Auto-SMS Check
+    const phone = localStorage.getItem('bt_phone_number');
+    if (phone && billsData && billsData.length > 0) {
+      setTimeout(async () => {
+        try {
+          const result = await checkAndSendAutoSms(billsData, daysUntil);
+          if (result.sent) {
+            toast('📱 SMS reminder sent automatically!');
+          }
+        } catch (smsErr) {
+          console.warn('⚠️ SMS check error:', smsErr);
+        }
+      }, 2000);
+    }
+
+  } catch (e) {
+    console.error('❌ Critical dashboard load error:', e);
+    toast('Error loading dashboard data', 'error');
+  } finally {
+    setLoading(false);
   }
+}
 
   // Setup Supabase realtime subscriptions
   const setupSubscriptions = () => {
