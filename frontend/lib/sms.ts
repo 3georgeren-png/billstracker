@@ -48,8 +48,6 @@ export function formatReminderMessage(billerName: string, amount: number, dueDat
 }
 
 // Format multiple bills
-// lib/sms.ts
-
 export function formatBulkReminderMessage(bills: Array<{ name: string; amount: number; dueDate: string; days: number }>): string {
   // Shorten each bill to fit in 160 chars
   const parts = bills.map((bill, index) => {
@@ -94,13 +92,36 @@ export function getBillsNeedingAttention(bills: any[], daysUntil: (d: string) =>
       if (bill.current_balance <= 0) return false;
       return days < 0 || days <= 7;
     })
-    .map(bill => ({
-      id: bill.id,
-      name: bill.expand?.biller_id?.name || 'Unknown',
-      amount: bill.current_balance,
-      dueDate: new Date(bill.next_bill_date).toLocaleDateString('en-GB'),
-      days: daysUntil(bill.next_bill_date) || 0,
-      biller: bill.expand?.biller_id
-    }))
+    .map(bill => {
+      // ✅ FIX: Try different ways to get biller name
+      let billerName = 'Unknown';
+      
+      // Check for Supabase format (biller is a joined object)
+      if (bill.biller?.name) {
+        billerName = bill.biller.name;
+      } 
+      // Check for PocketBase format (expand.biller_id)
+      else if (bill.expand?.biller_id?.name) {
+        billerName = bill.expand.biller_id.name;
+      } 
+      // Check for direct biller_id with name
+      else if (bill.biller_id?.name) {
+        billerName = bill.biller_id.name;
+      }
+      // Check if biller is a string ID and we have billers array available
+      else if (bill.biller_id && typeof bill.biller_id === 'string') {
+        // Keep as Unknown - will need to be enriched elsewhere
+        billerName = 'Unknown';
+      }
+      
+      return {
+        id: bill.id,
+        name: billerName,
+        amount: bill.current_balance,
+        dueDate: new Date(bill.next_bill_date).toLocaleDateString('en-GB'),
+        days: daysUntil(bill.next_bill_date) || 0,
+        biller: bill.biller || bill.expand?.biller_id
+      };
+    })
     .sort((a, b) => a.days - b.days);
 }
