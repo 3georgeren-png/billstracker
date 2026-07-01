@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import pb, { Biller, DirectDebit } from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
 import { Modal } from '@/components/ui/Modal';
 import { toast } from '@/components/ui/Toaster';
 import { FilterDropdown } from '@/components/ui/FilterDropdown';
@@ -12,15 +12,15 @@ import { FieldError, useFormErrors } from '@/components/ui/FieldError';
 import { Skeleton } from '@/components/ui/Skeleton';
 
 const fmt = (n: number) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(n || 0);
-const emptyDD: Partial<DirectDebit> = { biller_id: '', amount: 0, collection_day: 1, next_dd_date: '', status: 'active', notes: '' };
+const emptyDD: Partial<any> = { biller_id: '', amount: 0, collection_day: 1, next_dd_date: '', status: 'active', notes: '' };
 
 export default function DirectDebits() {
-  const [dds, setDDs] = useState<DirectDebit[]>([]);
-  const [filteredDDs, setFilteredDDs] = useState<DirectDebit[]>([]);
-  const [billers, setBillers] = useState<Biller[]>([]);
+  const [dds, setDDs] = useState<any[]>([]);
+  const [filteredDDs, setFilteredDDs] = useState<any[]>([]);
+  const [billers, setBillers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Partial<DirectDebit>>(emptyDD);
+  const [editing, setEditing] = useState<Partial<any>>(emptyDD);
   const [saving, setSaving] = useState(false);
   const { errors, setError, clearError, clearAll } = useFormErrors();
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -35,21 +35,38 @@ export default function DirectDebits() {
   const load = async () => {
     setLoading(true);
     try {
-      const [d, b] = await Promise.all([
-        pb.collection('direct_debits').getFullList<DirectDebit>({ expand: 'biller_id', sort: 'collection_day' }),
-        pb.collection('billers').getFullList<Biller>({ sort: 'name', filter: 'is_active=true' }),
-      ]);
-      setDDs(d); 
-      setBillers(b);
-      applyFilters(d);
+      // Load direct debits with biller info
+      const { data: ddsData, error: ddsError } = await supabase
+        .from('direct_debits')
+        .select(`
+          *,
+          biller:billers(id, name, category, is_active)
+        `)
+        .order('collection_day', { ascending: true });
+
+      if (ddsError) throw ddsError;
+
+      // Load billers
+      const { data: billersData, error: billersError } = await supabase
+        .from('billers')
+        .select('*')
+        .eq('is_active', true)
+        .order('name');
+
+      if (billersError) throw billersError;
+
+      setDDs(ddsData || []);
+      setBillers(billersData || []);
+      applyFilters(ddsData || []);
     } catch (error) {
       console.error('Error loading direct debits:', error);
+      toast('Failed to load direct debits', 'error');
     } finally {
       setLoading(false);
     }
   };
 
-  const applyFilters = (data: DirectDebit[]) => {
+  const applyFilters = (data: any[]) => {
     let filtered = [...data];
 
     if (filterStatus !== 'all') {
@@ -63,7 +80,7 @@ export default function DirectDebits() {
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim();
       filtered = filtered.filter(d => 
-        d.expand?.biller_id?.name?.toLowerCase().includes(query) ||
+        d.biller?.name?.toLowerCase().includes(query) ||
         d.notes?.toLowerCase().includes(query)
       );
     }
@@ -78,7 +95,7 @@ export default function DirectDebits() {
           comparison = (a.collection_day || 0) - (b.collection_day || 0);
           break;
         case 'biller':
-          comparison = (a.expand?.biller_id?.name || '').localeCompare(b.expand?.biller_id?.name || '');
+          comparison = (a.biller?.name || '').localeCompare(b.biller?.name || '');
           break;
       }
       return sortOrder === 'asc' ? comparison : -comparison;
@@ -93,10 +110,19 @@ export default function DirectDebits() {
 
   useEffect(() => { 
     load(); 
-    pb.collection('direct_debits').subscribe('*', load); 
-    return () => { 
-      pb.collection('direct_debits').unsubscribe(); 
-    }; 
+  }, []);
+
+  // Set up realtime subscription
+  useEffect(() => {
+    const channel = supabase
+      .channel('direct_debits-changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'direct_debits' },
+        () => load()
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   const save = async () => {
@@ -108,23 +134,78 @@ export default function DirectDebits() {
     if (!valid) return;
     setSaving(true);
     try {
-      if (editing.id) { await pb.collection('direct_debits').update(editing.id, editing); toast('Direct debit updated'); }
-      else { await pb.collection('direct_debits').create(editing); toast('Direct debit added'); }
-      setOpen(false); setEditing(emptyDD); clearAll();
-    } catch { toast('Something went wrong', 'error'); }
+      if (editing.id) {
+        await supabase
+          .from('direct_debits')
+          .update({
+            biller_id: editing.biller_id,
+            amount: editing.amount,
+            collection_day: editing.collection_day,
+            next_dd_date: editing.next_dd_date || null,
+            status: editing.status || 'active',
+            notes: editing.notes || '',
+            updated: new Date().toISOString(),
+          })
+          .eq('id', editing.id);
+        toast('Direct debit updated');
+      } else {
+        await supabase
+          .from('direct_debits')
+          .insert([{
+            biller_id: editing.biller_id,
+            amount: editing.amount,
+            collection_day: editing.collection_day,
+            next_dd_date: editing.next_dd_date || null,
+            status: editing.status || 'active',
+            notes: editing.notes || '',
+            created: new Date().toISOString(),
+            updated: new Date().toISOString(),
+          }]);
+        toast('Direct debit added');
+      }
+      setOpen(false); 
+      setEditing(emptyDD); 
+      clearAll();
+      load();
+    } catch (error) {
+      console.error('Error saving direct debit:', error);
+      toast('Something went wrong', 'error');
+    }
     finally { setSaving(false); }
   };
 
-  const toggleStatus = async (dd: DirectDebit) => {
+  const toggleStatus = async (dd: any) => {
     const newStatus = dd.status === 'active' ? 'paused' : 'active';
-    await pb.collection('direct_debits').update(dd.id, { status: newStatus });
-    toast(`DD ${newStatus === 'active' ? 'resumed' : 'paused'}`);
-    load();
+    try {
+      await supabase
+        .from('direct_debits')
+        .update({ 
+          status: newStatus,
+          updated: new Date().toISOString(),
+        })
+        .eq('id', dd.id);
+      toast(`DD ${newStatus === 'active' ? 'resumed' : 'paused'}`);
+      load();
+    } catch (error) {
+      console.error('Error toggling status:', error);
+      toast('Failed to update status', 'error');
+    }
   };
 
   const remove = async (id: string) => {
-    try { await pb.collection('direct_debits').delete(id); toast('DD deleted'); setDeleteId(null); load(); }
-    catch { toast('Could not delete', 'error'); }
+    try { 
+      await supabase
+        .from('direct_debits')
+        .delete()
+        .eq('id', id);
+      toast('DD deleted'); 
+      setDeleteId(null); 
+      load(); 
+    }
+    catch (error) {
+      console.error('Error deleting direct debit:', error);
+      toast('Could not delete', 'error');
+    }
   };
 
   const resetFilters = () => {
@@ -359,7 +440,7 @@ export default function DirectDebits() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
             {filteredDDs.map(dd => {
-              const biller = dd.expand?.biller_id;
+              const biller = dd.biller;
               const status = dd.status || 'active';
               const daySuffix = ['st','nd','rd'][dd.collection_day - 1] || 'th';
               
