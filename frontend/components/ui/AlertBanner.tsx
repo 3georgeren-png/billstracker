@@ -2,20 +2,18 @@
 import { useState, useEffect, useRef } from 'react';
 import { Bell, X, ChevronRight, Calendar, Clock, AlertCircle, Zap, BellRing, Eye } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { Bill } from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
 import { categoryEmoji } from '@/components/ui/CategoryBadge';
-import pb from '@/lib/supabase-adapter';
 import { toast } from '@/components/ui/Toaster';
-import { createPortal } from 'react-dom';
 
 type Props = {
-  bills: Bill[];
+  bills: any[];
   daysUntil: (d: string) => number | null;
   fmt: (n: number) => string;
 };
 
 type AlertItem = {
-  bill: Bill;
+  bill: any;
   type: 'reminder' | 'upcoming' | 'overdue';
   days: number;
   message: string;
@@ -36,7 +34,6 @@ export function AlertBanner({ bills, daysUntil, fmt }: Props) {
   const [revealedId, setRevealedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [isVisible, setIsVisible] = useState(true);
-  const [lastScrollY, setLastScrollY] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
   const scrollableRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -46,20 +43,33 @@ export function AlertBanner({ bills, daysUntil, fmt }: Props) {
     try {
       const today = new Date().toISOString().split('T')[0];
       
-      const r = await pb.collection('reminders').getFullList({
-        expand: 'biller_id',
-        filter: `status="pending" && (snoozed_until="" || snoozed_until=null || snoozed_until<="${today}")`,
-        sort: 'reminder_date',
+      // ✅ Get reminders from Supabase
+      const { data: remindersData, error: remindersError } = await supabase
+        .from('reminders')
+        .select('*, biller:billers(id, name, category)')
+        .eq('status', 'pending')
+        .order('reminder_date', { ascending: true });
+
+      if (remindersError) {
+        console.error('Error loading reminders:', remindersError);
+        return;
+      }
+
+      // Filter reminders by snoozed_until
+      const filteredReminders = (remindersData || []).filter((r: any) => {
+        if (!r.snoozed_until || r.snoozed_until === '') return true;
+        return r.snoozed_until <= today;
       });
-      setReminders(r);
+
+      setReminders(filteredReminders);
 
       const alertItems: AlertItem[] = [];
 
-      r.forEach((reminder: any) => {
+      filteredReminders.forEach((reminder: any) => {
         const days = daysUntil(reminder.reminder_date);
         if (days === null) return;
 
-        const bill = bills.find(b => b.biller_id === reminder.biller_id);
+        const bill = bills.find((b: any) => b.biller_id === reminder.biller_id);
         if (!bill) return;
 
         if (bill.snoozed_until && bill.snoozed_until > today) return;
@@ -91,14 +101,14 @@ export function AlertBanner({ bills, daysUntil, fmt }: Props) {
         }
       });
 
-      bills.forEach(bill => {
+      bills.forEach((bill: any) => {
         const days = daysUntil(bill.next_bill_date);
         if (days === null) return;
 
         const today = new Date().toISOString().split('T')[0];
         if (bill.snoozed_until && bill.snoozed_until > today) return;
 
-        const hasReminder = alertItems.some(a => a.bill.id === bill.id);
+        const hasReminder = alertItems.some((a: any) => a.bill.id === bill.id);
         if (hasReminder) return;
 
         if (days >= 0 && days <= 7) {
@@ -124,14 +134,14 @@ export function AlertBanner({ bills, daysUntil, fmt }: Props) {
         }
       });
 
-      bills.forEach(bill => {
+      bills.forEach((bill: any) => {
         const days = daysUntil(bill.next_bill_date);
         if (days === null) return;
 
         const today = new Date().toISOString().split('T')[0];
         if (bill.snoozed_until && bill.snoozed_until > today) return;
 
-        const hasAlert = alertItems.some(a => a.bill.id === bill.id);
+        const hasAlert = alertItems.some((a: any) => a.bill.id === bill.id);
         if (hasAlert) return;
 
         if (days < 0) {
@@ -162,79 +172,67 @@ export function AlertBanner({ bills, daysUntil, fmt }: Props) {
   };
 
   // Scroll handler for hiding the bell button
-// AlertBanner.tsx - Scroll with bottom detection
-useEffect(() => {
-  let isScrolling = false;
-  let scrollTimeout: NodeJS.Timeout | null = null;
-  let lastScrollY = window.scrollY;
+  useEffect(() => {
+    let scrollTimeout: NodeJS.Timeout | null = null;
+    let lastScrollY = window.scrollY;
 
-  const handleScroll = () => {
-    if (scrollTimeout) {
-      clearTimeout(scrollTimeout);
-    }
-
-    scrollTimeout = setTimeout(() => {
-      const currentScrollY = window.scrollY;
-      const windowHeight = window.innerHeight;
-      const documentHeight = document.documentElement.scrollHeight;
-      
-      // Check if at bottom (within 100px)
-      const isAtBottom = currentScrollY + windowHeight >= documentHeight - 100;
-      
-      // Check if at top (within 50px)
-      const isAtTop = currentScrollY < 50;
-
-      // If at bottom, hide
-      if (isAtBottom) {
-        setIsVisible(false);
-      } 
-      // If at top or scrolling up, show
-      else if (isAtTop || currentScrollY < lastScrollY) {
-        setIsVisible(true);
-      }
-      // If scrolling down and not at bottom, hide after 100px
-      else if (currentScrollY > 100 && currentScrollY > lastScrollY + 10) {
-        setIsVisible(false);
-      }
-
-      lastScrollY = currentScrollY;
-      scrollTimeout = null;
-    }, 50);
-  };
-
-  // Also check when window resizes (orientation change on mobile)
-  const handleResize = () => {
-    const windowHeight = window.innerHeight;
-    const documentHeight = document.documentElement.scrollHeight;
-    const currentScrollY = window.scrollY;
-    const isAtBottom = currentScrollY + windowHeight >= documentHeight - 100;
-    
-    if (isAtBottom) {
-      setIsVisible(false);
-    } else {
-      setIsVisible(true);
-    }
-  };
-
-  if (typeof window !== 'undefined') {
-    // Initial check
-    const initialScrollY = window.scrollY;
-    if (initialScrollY < 50) {
-      setIsVisible(true);
-    }
-
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    window.addEventListener('resize', handleResize, { passive: true });
-    
-    return () => {
-      window.removeEventListener('scroll', handleScroll);
-      window.removeEventListener('resize', handleResize);
+    const handleScroll = () => {
       if (scrollTimeout) {
         clearTimeout(scrollTimeout);
       }
+
+      scrollTimeout = setTimeout(() => {
+        const currentScrollY = window.scrollY;
+        const windowHeight = window.innerHeight;
+        const documentHeight = document.documentElement.scrollHeight;
+        
+        const isAtBottom = currentScrollY + windowHeight >= documentHeight - 100;
+        const isAtTop = currentScrollY < 50;
+
+        if (isAtBottom) {
+          setIsVisible(false);
+        } else if (isAtTop || currentScrollY < lastScrollY) {
+          setIsVisible(true);
+        } else if (currentScrollY > 100 && currentScrollY > lastScrollY + 10) {
+          setIsVisible(false);
+        }
+
+        lastScrollY = currentScrollY;
+        scrollTimeout = null;
+      }, 50);
     };
-  }
-}, []);
+
+    const handleResize = () => {
+      const windowHeight = window.innerHeight;
+      const documentHeight = document.documentElement.scrollHeight;
+      const currentScrollY = window.scrollY;
+      const isAtBottom = currentScrollY + windowHeight >= documentHeight - 100;
+      
+      if (isAtBottom) {
+        setIsVisible(false);
+      } else {
+        setIsVisible(true);
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      const initialScrollY = window.scrollY;
+      if (initialScrollY < 50) {
+        setIsVisible(true);
+      }
+
+      window.addEventListener('scroll', handleScroll, { passive: true });
+      window.addEventListener('resize', handleResize, { passive: true });
+      
+      return () => {
+        window.removeEventListener('scroll', handleScroll);
+        window.removeEventListener('resize', handleResize);
+        if (scrollTimeout) {
+          clearTimeout(scrollTimeout);
+        }
+      };
+    }
+  }, []);
 
   // Initial load
   useEffect(() => {
@@ -251,7 +249,7 @@ useEffect(() => {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [bills]);
 
   // Close on outside click
   useEffect(() => {
@@ -304,9 +302,13 @@ useEffect(() => {
       snoozeDate.setDate(snoozeDate.getDate() + 1);
       const snoozeDateStr = snoozeDate.toISOString().split('T')[0];
       
-      await pb.collection('bills').update(alert.bill.id, {
-        snoozed_until: snoozeDateStr
-      });
+      await supabase
+        .from('bills')
+        .update({
+          snoozed_until: snoozeDateStr,
+          updated: new Date().toISOString(),
+        })
+        .eq('id', alert.bill.id);
       
       toast(`⏰ Alert snoozed until ${snoozeDate.toLocaleDateString('en-GB', { 
         day: 'numeric', 
@@ -330,9 +332,13 @@ useEffect(() => {
       snoozeDate.setDate(snoozeDate.getDate() + 30);
       const snoozeDateStr = snoozeDate.toISOString().split('T')[0];
       
-      await pb.collection('bills').update(alert.bill.id, {
-        snoozed_until: snoozeDateStr
-      });
+      await supabase
+        .from('bills')
+        .update({
+          snoozed_until: snoozeDateStr,
+          updated: new Date().toISOString(),
+        })
+        .eq('id', alert.bill.id);
       
       toast('✅ Alert dismissed');
       setOpen(false);
@@ -594,7 +600,7 @@ useEffect(() => {
           }}
         >
           {alerts.map(alert => {
-            const biller = alert.bill.expand?.biller_id;
+            const biller = alert.bill.biller;
             const isPaid = alert.bill.current_balance === 0;
             const isRecurring = alert.bill.frequency && alert.bill.frequency !== 'one_off';
             
@@ -885,18 +891,16 @@ useEffect(() => {
         }
 
         /* Hide scrollbar but keep functionality */
-        @layer utilities {
-          .no-scrollbar::-webkit-scrollbar {
-            display: none !important;
-            width: 0 !important;
-            height: 0 !important;
-          }
-          
-          .no-scrollbar {
-            -ms-overflow-style: none !important;
-            scrollbar-width: none !important;
-          }
-        } 
+        .no-scrollbar::-webkit-scrollbar {
+          display: none !important;
+          width: 0 !important;
+          height: 0 !important;
+        }
+        
+        .no-scrollbar {
+          -ms-overflow-style: none !important;
+          scrollbar-width: none !important;
+        }
       `}</style>
     </div>
   );
