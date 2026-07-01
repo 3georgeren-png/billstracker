@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import pb, { Biller } from '@/lib/pocketbase';
+import { supabase } from '@/lib/supabase';
 import { Modal } from '@/components/ui/Modal';
 import { CategoryBadge } from '@/components/ui/CategoryBadge';
 import { toast } from '@/components/ui/Toaster';
@@ -14,27 +14,41 @@ import { FieldError, useFormErrors } from '@/components/ui/FieldError';
 import { FilterDropdown } from '@/components/ui/FilterDropdown';
 
 const CATEGORIES = ['Water','Council Tax','Energy','Internet','Insurance','Mobile','TV Licence','Other'];
-const empty: Partial<Biller> = { name: '', category: 'Other', account_number: '', contact_info: '', notes: '', vulnerability_flag: false, is_active: true };
+const empty: Partial<any> = { name: '', category: 'Other', account_number: '', contact_info: '', notes: '', vulnerability_flag: false, is_active: true };
 
 export default function Billers() {
-  const [billers, setBillers] = useState<Biller[]>([]);
-  const [filtered, setFiltered] = useState<Biller[]>([]);
+  const [billers, setBillers] = useState<any[]>([]);
+  const [filtered, setFiltered] = useState<any[]>([]);
   const [search, setSearch] = useState('');
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Partial<Biller>>(empty);
+  const [editing, setEditing] = useState<Partial<any>>(empty);
   const [saving, setSaving] = useState(false);
   const { errors, setError, clearError, clearAll } = useFormErrors();
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'inactive'>('all');
+  const [loading, setLoading] = useState(true);
 
   const load = async () => {
-    const list = await pb.collection('billers').getFullList<Biller>({ sort: 'name' });
-    setBillers(list);
-    applyFilters(list);
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('billers')
+        .select('*')
+        .order('name');
+
+      if (error) throw error;
+      setBillers(data || []);
+      applyFilters(data || []);
+    } catch (error) {
+      console.error('Error loading billers:', error);
+      toast('Failed to load billers', 'error');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const applyFilters = (data: Biller[]) => {
+  const applyFilters = (data: any[]) => {
     let f = [...data];
     
     // Category filter
@@ -64,8 +78,17 @@ export default function Billers() {
 
   useEffect(() => {
     load();
-    pb.collection('billers').subscribe('*', load).catch(() => {});
-    return () => { pb.collection('billers').unsubscribe('*').catch(() => {}); };
+
+    // Subscribe to changes
+    const channel = supabase
+      .channel('billers-changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'billers' },
+        () => load()
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   useEffect(() => {
@@ -79,16 +102,68 @@ export default function Billers() {
     if (!valid) return;
     setSaving(true);
     try {
-      if (editing.id) { await pb.collection('billers').update(editing.id, editing); toast('Biller updated'); }
-      else { await pb.collection('billers').create(editing); toast('Biller added'); }
-      setOpen(false); setEditing(empty); clearAll();
-    } catch { toast('Something went wrong', 'error'); }
-    finally { setSaving(false); }
+      if (editing.id) {
+        const { error } = await supabase
+          .from('billers')
+          .update({
+            name: editing.name,
+            category: editing.category,
+            account_number: editing.account_number,
+            contact_info: editing.contact_info,
+            notes: editing.notes,
+            vulnerability_flag: editing.vulnerability_flag,
+            is_active: editing.is_active,
+            updated: new Date().toISOString(),
+          })
+          .eq('id', editing.id);
+        
+        if (error) throw error;
+        toast('Biller updated');
+      } else {
+        const { error } = await supabase
+          .from('billers')
+          .insert([{
+            name: editing.name,
+            category: editing.category,
+            account_number: editing.account_number,
+            contact_info: editing.contact_info,
+            notes: editing.notes,
+            vulnerability_flag: editing.vulnerability_flag || false,
+            is_active: editing.is_active !== undefined ? editing.is_active : true,
+            created: new Date().toISOString(),
+            updated: new Date().toISOString(),
+          }]);
+        
+        if (error) throw error;
+        toast('Biller added');
+      }
+      setOpen(false); 
+      setEditing(empty); 
+      clearAll();
+      load();
+    } catch (error) {
+      console.error('Error saving biller:', error);
+      toast('Something went wrong', 'error');
+    } finally { 
+      setSaving(false); 
+    }
   };
 
   const remove = async (id: string) => {
-    try { await pb.collection('billers').delete(id); toast('Biller deleted'); setDeleteId(null); }
-    catch { toast('Could not delete biller', 'error'); }
+    try {
+      const { error } = await supabase
+        .from('billers')
+        .delete()
+        .eq('id', id);
+      
+      if (error) throw error;
+      toast('Biller deleted');
+      setDeleteId(null);
+      load();
+    } catch (error) {
+      console.error('Error deleting biller:', error);
+      toast('Could not delete biller', 'error');
+    }
   };
 
   const resetFilters = () => { setSelectedCategory('all'); setFilterStatus('all'); setSearch(''); };
@@ -102,6 +177,14 @@ export default function Billers() {
   const activeBillers = billers.filter(b => b.is_active).length;
   const inactiveBillers = billers.filter(b => !b.is_active).length;
   const vulnerableBillers = billers.filter(b => b.vulnerability_flag).length;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="w-8 h-8 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="w-full max-w-full overflow-x-hidden px-3 sm:px-4 md:px-6 pt-[72px] sm:pt-2 pb-24 sm:pb-6">
