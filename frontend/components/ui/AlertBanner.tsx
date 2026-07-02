@@ -66,44 +66,141 @@ export function AlertBanner({ bills, daysUntil, fmt }: Props) {
       const alertItems: AlertItem[] = [];
 
       // ── Reminders ──
-      filteredReminders.forEach((reminder: any) => {
-        const days = daysUntil(reminder.reminder_date);
-        if (days === null) return;
+     const loadData = async () => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    
+    // ✅ Get reminders from Supabase
+    const { data: remindersData, error: remindersError } = await supabase
+      .from('reminders')
+      .select('*, biller:billers(id, name, category)')
+      .eq('status', 'pending')
+      .order('reminder_date', { ascending: true });
 
-        const bill = bills.find((b: any) => b.biller_id === reminder.biller_id);
-        if (!bill) return;
+    if (remindersError) {
+      console.error('Error loading reminders:', remindersError);
+      return;
+    }
 
-        if (bill.snoozed_until && bill.snoozed_until > today) return;
+    // ✅ Simplified filtering - ONE clean filter
+    const activeReminders = (remindersData || []).filter((r: any) => {
+      const days = daysUntil(r.reminder_date);
+      
+      // Find the associated bill
+      const bill = bills.find((b: any) => b.biller_id === r.biller_id);
+      
+      // ✅ Smart filtering:
+      // 1. Must have valid days (not null)
+      // 2. Days must be between -3 and 7 (overdue up to 3 days, or upcoming within 7 days)
+      // 3. Bill must have balance > 0 (unpaid)
+      // 4. Not snoozed
+      return days !== null && 
+             days >= -3 && 
+             days <= 7 && 
+             bill?.current_balance > 0 &&
+             (!r.snoozed_until || r.snoozed_until <= today);
+    });
 
-        // ✅ Only add if bill has balance > 0 (UNPAID)
-        if (bill.current_balance > 0) {
-          if (days <= 7) {
-            let message = '';
-            const isRecurringPaid = bill.frequency && 
-              bill.frequency !== 'one_off' && 
-              bill.current_balance === 0;
+    setReminders(activeReminders);
 
-            if (days < 0) {
-              message = `Overdue by ${Math.abs(days)}d`;
-            } else if (days === 0) {
-              message = `Today!`;
-            } else if (days === 1) {
-              message = `Tomorrow`;
-            } else {
-              message = `${isRecurringPaid ? 'Next payment in' : 'In'} ${days}d`;
-            }
+    const alertItems: AlertItem[] = [];
 
-            alertItems.push({
-              bill,
-              type: 'reminder',
-              days,
-              message: `${message} - ${reminder.message || 'Payment due'}`,
-              priority: 1,
-              reminderId: reminder.id,
-            });
-          }
-        }
+    // ── Reminders ──
+    activeReminders.forEach((reminder: any) => {
+      const days = daysUntil(reminder.reminder_date)!;
+      const bill = bills.find((b: any) => b.biller_id === reminder.biller_id);
+      if (!bill) return;
+
+      let message = '';
+      const isRecurringPaid = bill.frequency && 
+        bill.frequency !== 'one_off' && 
+        bill.current_balance === 0;
+
+      if (days < 0) {
+        message = `Overdue by ${Math.abs(days)}d`;
+      } else if (days === 0) {
+        message = `Today!`;
+      } else if (days === 1) {
+        message = `Tomorrow`;
+      } else {
+        message = `${isRecurringPaid ? 'Next payment in' : 'In'} ${days}d`;
+      }
+
+      alertItems.push({
+        bill,
+        type: 'reminder',
+        days,
+        message: `${message} - ${reminder.message || 'Payment due'}`,
+        priority: 1,
+        reminderId: reminder.id,
       });
+    });
+
+    // ── Upcoming Bills ──
+    bills.forEach((bill: any) => {
+      const days = daysUntil(bill.next_bill_date);
+      if (days === null) return;
+
+      if (bill.snoozed_until && bill.snoozed_until > today) return;
+
+      const hasReminder = alertItems.some((a: any) => a.bill.id === bill.id);
+      if (hasReminder) return;
+
+      // ✅ Only add if bill has balance > 0 (UNPAID) and days between 0-7
+      if (bill.current_balance > 0 && days >= 0 && days <= 7) {
+        let message = '';
+        if (days === 0) {
+          message = `Due today!`;
+        } else if (days === 1) {
+          message = `Due tomorrow`;
+        } else {
+          message = `Due in ${days}d`;
+        }
+
+        alertItems.push({
+          bill,
+          type: 'upcoming',
+          days,
+          message: `${message} - No reminder set`,
+          priority: 2,
+        });
+      }
+    });
+
+    // ── Overdue Bills ──
+    bills.forEach((bill: any) => {
+      const days = daysUntil(bill.next_bill_date);
+      if (days === null) return;
+
+      if (bill.snoozed_until && bill.snoozed_until > today) return;
+
+      const hasAlert = alertItems.some((a: any) => a.bill.id === bill.id);
+      if (hasAlert) return;
+
+      // ✅ Only add if bill has balance > 0 (UNPAID) and overdue
+      if (bill.current_balance > 0 && days < 0) {
+        alertItems.push({
+          bill,
+          type: 'overdue',
+          days,
+          message: `${Math.abs(days)}d overdue!`,
+          priority: 3,
+        });
+      }
+    });
+
+    alertItems.sort((a, b) => {
+      if (a.type === 'overdue' && b.type !== 'overdue') return -1;
+      if (b.type === 'overdue' && a.type !== 'overdue') return 1;
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return a.days - b.days;
+    });
+
+    setAlerts(alertItems);
+  } catch (e) {
+    console.error('Failed to load alerts:', e);
+  }
+};
 
       // ── Upcoming Bills ──
       bills.forEach((bill: any) => {
