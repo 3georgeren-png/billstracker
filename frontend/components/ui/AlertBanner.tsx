@@ -65,6 +65,7 @@ export function AlertBanner({ bills, daysUntil, fmt }: Props) {
 
       const alertItems: AlertItem[] = [];
 
+      // ── Reminders ──
       filteredReminders.forEach((reminder: any) => {
         const days = daysUntil(reminder.reminder_date);
         if (days === null) return;
@@ -74,33 +75,37 @@ export function AlertBanner({ bills, daysUntil, fmt }: Props) {
 
         if (bill.snoozed_until && bill.snoozed_until > today) return;
 
-        if (days <= 7) {
-          let message = '';
-          const isRecurringPaid = bill.frequency && 
-            bill.frequency !== 'one_off' && 
-            bill.current_balance === 0;
+        // ✅ Only add if bill has balance > 0 (UNPAID)
+        if (bill.current_balance > 0) {
+          if (days <= 7) {
+            let message = '';
+            const isRecurringPaid = bill.frequency && 
+              bill.frequency !== 'one_off' && 
+              bill.current_balance === 0;
 
-          if (days < 0) {
-            message = `Overdue by ${Math.abs(days)}d`;
-          } else if (days === 0) {
-            message = `Today!`;
-          } else if (days === 1) {
-            message = `Tomorrow`;
-          } else {
-            message = `${isRecurringPaid ? 'Next payment in' : 'In'} ${days}d`;
+            if (days < 0) {
+              message = `Overdue by ${Math.abs(days)}d`;
+            } else if (days === 0) {
+              message = `Today!`;
+            } else if (days === 1) {
+              message = `Tomorrow`;
+            } else {
+              message = `${isRecurringPaid ? 'Next payment in' : 'In'} ${days}d`;
+            }
+
+            alertItems.push({
+              bill,
+              type: 'reminder',
+              days,
+              message: `${message} - ${reminder.message || 'Payment due'}`,
+              priority: 1,
+              reminderId: reminder.id,
+            });
           }
-
-          alertItems.push({
-            bill,
-            type: 'reminder',
-            days,
-            message: `${message} - ${reminder.message || 'Payment due'}`,
-            priority: 1,
-            reminderId: reminder.id,
-          });
         }
       });
 
+      // ── Upcoming Bills ──
       bills.forEach((bill: any) => {
         const days = daysUntil(bill.next_bill_date);
         if (days === null) return;
@@ -111,29 +116,33 @@ export function AlertBanner({ bills, daysUntil, fmt }: Props) {
         const hasReminder = alertItems.some((a: any) => a.bill.id === bill.id);
         if (hasReminder) return;
 
-        if (days >= 0 && days <= 7) {
-          const isPaid = bill.current_balance === 0;
-          if (isPaid) return;
+        // ✅ Only add if bill has balance > 0 (UNPAID) and days between 0-7
+        if (bill.current_balance > 0) {
+          if (days >= 0 && days <= 7) {
+            const isPaid = bill.current_balance === 0;
+            if (isPaid) return;
 
-          let message = '';
-          if (days === 0) {
-            message = `Due today!`;
-          } else if (days === 1) {
-            message = `Due tomorrow`;
-          } else {
-            message = `Due in ${days}d`;
+            let message = '';
+            if (days === 0) {
+              message = `Due today!`;
+            } else if (days === 1) {
+              message = `Due tomorrow`;
+            } else {
+              message = `Due in ${days}d`;
+            }
+
+            alertItems.push({
+              bill,
+              type: 'upcoming',
+              days,
+              message: `${message} - No reminder set`,
+              priority: 2,
+            });
           }
-
-          alertItems.push({
-            bill,
-            type: 'upcoming',
-            days,
-            message: `${message} - No reminder set`,
-            priority: 2,
-          });
         }
       });
 
+      // ── Overdue Bills ──
       bills.forEach((bill: any) => {
         const days = daysUntil(bill.next_bill_date);
         if (days === null) return;
@@ -144,17 +153,20 @@ export function AlertBanner({ bills, daysUntil, fmt }: Props) {
         const hasAlert = alertItems.some((a: any) => a.bill.id === bill.id);
         if (hasAlert) return;
 
-        if (days < 0) {
-          const isPaid = bill.current_balance === 0;
-          if (isPaid) return;
+        // ✅ Only add if bill has balance > 0 (UNPAID) and overdue
+        if (bill.current_balance > 0) {
+          if (days < 0) {
+            const isPaid = bill.current_balance === 0;
+            if (isPaid) return;
 
-          alertItems.push({
-            bill,
-            type: 'overdue',
-            days,
-            message: `${Math.abs(days)}d overdue!`,
-            priority: 3,
-          });
+            alertItems.push({
+              bill,
+              type: 'overdue',
+              days,
+              message: `${Math.abs(days)}d overdue!`,
+              priority: 3,
+            });
+          }
         }
       });
 
