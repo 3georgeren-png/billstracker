@@ -367,45 +367,48 @@ async function load() {
     .filter(b => b?.next_bill_date && daysUntil(b.next_bill_date) !== null && daysUntil(b.next_bill_date)! <= 30)
     .sort((a, b) => new Date(a.next_bill_date!).getTime() - new Date(b.next_bill_date!).getTime());
 
-  const handleQuickPay = async () => {
-    setQuickPayError('');
-    if (!quickPay) return;
-    if (!payAmount || parseFloat(payAmount) <= 0) {
-      setQuickPayError('Please enter a valid amount greater than £0');
-      return;
-    }
-    if (!payDate) {
-      setQuickPayError('Please select a payment date');
-      return;
-    }
-    setPaying(true);
-    try {
-      const result = await recordSmartPayment({
-        billId: quickPay.id,
-        billerId: quickPay.biller_id,
-        amount: parseFloat(payAmount),
-        paymentDate: payDate,
-        method: 'Bank Transfer',
-        notes: 'Quick payment from dashboard',
-        currentBalance: quickPay.current_balance || 0,
-        frequency: quickPay.frequency || 'monthly',
-        nextBillDate: quickPay.next_bill_date,
-      });
-      if (result.success) {
-        toast(result.message);
-        notifyPaymentRecorded(quickPay.biller?.name || 'Bill', parseFloat(payAmount));
-      } else {
-        toast('Something went wrong', 'error');
-      }
-      setQuickPay(null);
-      setPayAmount('');
-    } catch (err) {
-      console.error('Quick pay error:', err);
+ const handleQuickPay = async () => {
+  setQuickPayError('');
+  if (!quickPay) return;
+  if (!payAmount || parseFloat(payAmount) <= 0) {
+    setQuickPayError('Please enter a valid amount greater than £0');
+    return;
+  }
+  if (!payDate) {
+    setQuickPayError('Please select a payment date');
+    return;
+  }
+  setPaying(true);
+  try {
+    const result = await recordSmartPayment({
+      billId: quickPay.id,
+      billerId: quickPay.biller_id,
+      amount: parseFloat(payAmount),
+      paymentDate: payDate,
+      method: 'Bank Transfer',
+      notes: 'Quick payment from dashboard',
+      currentBalance: quickPay.current_balance || 0,
+      frequency: quickPay.frequency || 'monthly',
+      nextBillDate: quickPay.next_bill_date,
+    });
+    if (result.success) {
+      toast(result.message);
+      notifyPaymentRecorded(quickPay.biller?.name || 'Bill', parseFloat(payAmount));
+      
+      // ✅ FIX: Reload all data after payment
+      await load(); // This reloads bills, reminders, etc.
+      
+    } else {
       toast('Something went wrong', 'error');
     }
-    finally { setPaying(false); }
-  };
-
+    setQuickPay(null);
+    setPayAmount('');
+  } catch (err) {
+    console.error('Quick pay error:', err);
+    toast('Something went wrong', 'error');
+  }
+  finally { setPaying(false); }
+};
   const handleQuickReminder = async (bill: Bill, daysBefore: number) => {
     setReminderSaving(true);
     try {
