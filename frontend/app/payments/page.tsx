@@ -206,6 +206,22 @@ export default function Payments() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    
+    // ✅ Check file size (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      toast('File too large. Max 5MB allowed.', 'error');
+      e.target.value = '';
+      return;
+    }
+    
+    // ✅ Check file type
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    if (!allowedTypes.includes(file.type)) {
+      toast('Only JPG, PNG, WEBP, and PDF files are allowed.', 'error');
+      e.target.value = '';
+      return;
+    }
+    
     setReceiptFile(file);
     if (file.type.startsWith('image/')) {
       const reader = new FileReader();
@@ -236,6 +252,7 @@ export default function Payments() {
     if (!editing.amount || editing.amount <= 0) { setError('amount', 'Amount must be greater than 0'); valid = false; }
     if (!editing.payment_date) { setError('payment_date', 'Payment date is required'); valid = false; }
     if (!valid) return;
+    
     setSaving(true);
     try {
       if (editing.id) {
@@ -249,22 +266,20 @@ export default function Payments() {
           updated: new Date().toISOString(),
         };
 
-        // If there's a receipt file, upload it
-       // If there's a receipt file, upload it
-if (receiptFile) {
-  const filePath = `${editing.id}/${receiptFile.name}`;
-  const { data, error } = await supabase.storage
-    .from('receipts')
-    .upload(filePath, receiptFile);
+        // ✅ Upload receipt if there is one
+        if (receiptFile) {
+          const filePath = `${editing.id}/${receiptFile.name}`;
+          const { data, error } = await supabase.storage
+            .from('receipts')
+            .upload(filePath, receiptFile);
 
-  if (error) {
-    console.error('Error uploading receipt:', error);
-    toast('Failed to upload receipt', 'error');
-  } else {
-    // Update the payment with the receipt filename
-    updateData.receipt = receiptFile.name;
-  }
-}
+          if (error) {
+            console.error('Error uploading receipt:', error);
+            toast('Failed to upload receipt: ' + error.message, 'error');
+          } else {
+            updateData.receipt = receiptFile.name;
+          }
+        }
 
         await supabase
           .from('payments')
@@ -272,6 +287,7 @@ if (receiptFile) {
           .eq('id', editing.id);
 
         toast('Payment updated');
+
       } else {
         // Find associated bill
         const bill = bills.find(b => b.biller_id === editing.biller_id);
@@ -289,7 +305,7 @@ if (receiptFile) {
             nextBillDate: bill.next_bill_date,
           });
           
-          // If receipt file exists, we need to update the newly created payment
+          // ✅ Upload receipt after payment is created
           if (receiptFile && result.success) {
             const { data: lastPayment } = await supabase
               .from('payments')
@@ -299,20 +315,26 @@ if (receiptFile) {
               .limit(1);
 
             if (lastPayment && lastPayment.length > 0) {
-              const receiptData: any = {
-                receipt: receiptFile.name,
-                updated: new Date().toISOString(),
-              };
-              await supabase
-                .from('payments')
-                .update(receiptData)
-                .eq('id', lastPayment[0].id);
-              // TODO: Upload file to Supabase Storage
+              const filePath = `${lastPayment[0].id}/${receiptFile.name}`;
+              const { error } = await supabase.storage
+                .from('receipts')
+                .upload(filePath, receiptFile);
+
+              if (error) {
+                console.error('Error uploading receipt:', error);
+                toast('Failed to upload receipt: ' + error.message, 'error');
+              } else {
+                await supabase
+                  .from('payments')
+                  .update({ receipt: receiptFile.name })
+                  .eq('id', lastPayment[0].id);
+              }
             }
           }
           toast(result.message);
+          
         } else {
-          // No bill found - create standalone payment
+          // ✅ No bill found - create standalone payment
           const paymentData: any = {
             biller_id: editing.biller_id,
             amount: editing.amount,
@@ -323,37 +345,48 @@ if (receiptFile) {
             updated: new Date().toISOString(),
           };
 
-          // If there's a receipt file, upload it
-if (receiptFile) {
-  const filePath = `${newPayment.id}/${receiptFile.name}`;
-  const { error } = await supabase.storage
-    .from('receipts')
-    .upload(filePath, receiptFile);
-
-  if (error) {
-    console.error('Error uploading receipt:', error);
-    toast('Failed to upload receipt', 'error');
-  } else {
-    paymentData.receipt = receiptFile.name;
-  }
-}
-
-          await supabase
+          // ✅ Insert the payment first
+          const { data: newPayment, error: insertError } = await supabase
             .from('payments')
-            .insert([paymentData]);
+            .insert([paymentData])
+            .select()
+            .single();
+
+          if (insertError) throw insertError;
+
+          // ✅ Upload receipt if there is one
+          if (receiptFile && newPayment) {
+            const filePath = `${newPayment.id}/${receiptFile.name}`;
+            const { error } = await supabase.storage
+              .from('receipts')
+              .upload(filePath, receiptFile);
+
+            if (error) {
+              console.error('Error uploading receipt:', error);
+              toast('Failed to upload receipt: ' + error.message, 'error');
+            } else {
+              // ✅ Update the payment with the receipt filename
+              await supabase
+                .from('payments')
+                .update({ receipt: receiptFile.name })
+                .eq('id', newPayment.id);
+            }
+          }
 
           toast('Payment recorded');
         }
       }
+
       setOpen(false);
       setEditing(emptyPay);
       setSmartInfo('');
       clearFile();
       clearAll();
       load();
+
     } catch (e) {
       console.error('Error saving payment:', e);
-      toast('Something went wrong', 'error');
+      toast('Something went wrong: ' + (e as any).message, 'error');
     } finally {
       setSaving(false);
     }
@@ -632,11 +665,15 @@ if (receiptFile) {
                           {p.method}
                         </span>
                         {p.receipt && (
-                          <span className="bill-card__status-badge" style={{ 
-                            color: 'var(--color-accent)',
-                            background: 'var(--color-accent-bg)',
-                            border: '1px solid var(--color-accent-border)'
-                          }}>
+                          <span 
+                            className="bill-card__status-badge cursor-pointer hover:opacity-80 transition-opacity" 
+                            style={{ 
+                              color: 'var(--color-accent)',
+                              background: 'var(--color-accent-bg)',
+                              border: '1px solid var(--color-accent-border)'
+                            }}
+                            onClick={() => setViewingReceipt(p)}
+                          >
                             <Paperclip size={10} /> Receipt
                           </span>
                         )}
