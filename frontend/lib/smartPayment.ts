@@ -121,7 +121,7 @@ export async function recordSmartPayment({
     // 4. Auto-create reminder for next due date (3 days before) - WITH AMOUNT
     if (nextDueDate && isFullyPaid && isRecurring) {
       try {
-        // Delete ALL old pending reminders for this biller
+        // ✅ Delete ALL old pending reminders for this biller
         const oldReminders = await pb.collection('reminders').getFullList({
           filter: `biller_id="${billerId}" && status="pending"`,
         });
@@ -166,6 +166,20 @@ export async function recordSmartPayment({
         }
       }
     }
+
+    // ✅ FIX: Delete old pending reminders for this biller (even if not fully paid or not recurring)
+    // This ensures old reminders are cleaned up when a payment is made
+    try {
+      const oldReminders = await pb.collection('reminders').getFullList({
+        filter: `biller_id="${billerId}" && status="pending"`,
+      });
+      
+      for (const r of oldReminders) {
+        try {
+          await pb.collection('reminders').delete(r.id);
+        } catch (e) {}
+      }
+    } catch (e) {}
 
     // 5. Build result message
     let message = '';
