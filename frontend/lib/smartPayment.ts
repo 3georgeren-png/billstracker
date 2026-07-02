@@ -1,5 +1,6 @@
-'use client';
+// lib/smartPayment.ts (optimized version)
 import pb from '@/lib/supabase-adapter';
+import { ReminderService } from './services/reminderService';
 
 export type Frequency = 'weekly' | 'fortnightly' | 'monthly' | 'quarterly' | 'annual' | 'one_off';
 
@@ -27,21 +28,11 @@ export function calcNextDate(fromDate: string, frequency: Frequency): string | n
   if (isNaN(date.getTime())) return null;
 
   switch (frequency) {
-    case 'weekly':
-      date.setDate(date.getDate() + 7);
-      break;
-    case 'fortnightly':
-      date.setDate(date.getDate() + 14);
-      break;
-    case 'monthly':
-      date.setMonth(date.getMonth() + 1);
-      break;
-    case 'quarterly':
-      date.setMonth(date.getMonth() + 3);
-      break;
-    case 'annual':
-      date.setFullYear(date.getFullYear() + 1);
-      break;
+    case 'weekly': date.setDate(date.getDate() + 7); break;
+    case 'fortnightly': date.setDate(date.getDate() + 14); break;
+    case 'monthly': date.setMonth(date.getMonth() + 1); break;
+    case 'quarterly': date.setMonth(date.getMonth() + 3); break;
+    case 'annual': date.setFullYear(date.getFullYear() + 1); break;
   }
   return date.toISOString().split('T')[0];
 }
@@ -52,8 +43,9 @@ export type PaymentResult = {
   isFullyPaid: boolean;
   nextDueDate: string | null;
   remainingBalance: number;
-  status?: 'paid' | 'partial' | 'paid_oneoff';
-  isRecurring?: boolean;
+  status: 'paid' | 'partial' | 'paid_oneoff';
+  isRecurring: boolean;
+  reminderSync?: { deleted: number; created: boolean; reason?: string };
 };
 
 export async function recordSmartPayment({
@@ -78,7 +70,7 @@ export async function recordSmartPayment({
   nextBillDate?: string;
 }): Promise<PaymentResult> {
   try {
-    // 1. Record the payment
+    // 1. Record payment (single operation)
     await pb.collection('payments').create({
       biller_id: billerId,
       bill_id: billId,
@@ -92,9 +84,8 @@ export async function recordSmartPayment({
     const remainingBalance = Math.max(0, currentBalance - amount);
     const isRecurring = frequency !== 'one_off';
 
-    // 2. Calculate next due date if fully paid
+    // 2. Calculate next due date
     let nextDueDate: string | null = null;
-    
     if (isFullyPaid && isRecurring) {
       nextDueDate = calcNextDate(paymentDate, frequency);
     } else if (!isFullyPaid && nextBillDate) {
@@ -103,83 +94,32 @@ export async function recordSmartPayment({
       nextDueDate = null;
     }
 
-    // 3. Update bill record
+    // 3. Update bill (single operation)
     const billUpdate: Record<string, any> = {
       current_balance: remainingBalance,
       last_bill_amount: amount,
       last_bill_date: paymentDate,
     };
-    
     if (nextDueDate) {
       billUpdate.next_bill_date = nextDueDate;
     } else if (isFullyPaid && !isRecurring) {
       billUpdate.next_bill_date = null;
     }
-    
     await pb.collection('bills').update(billId, billUpdate);
 
-    // 4. Auto-create reminder for next due date (3 days before) - WITH AMOUNT
-    if (nextDueDate && isFullyPaid && isRecurring) {
-      try {
-        // ✅ Delete ALL old pending reminders for this biller
-        const oldReminders = await pb.collection('reminders').getFullList({
-          filter: `biller_id="${billerId}" && status="pending"`,
-        });
-        
-        for (const r of oldReminders) {
-          try {
-            await pb.collection('reminders').delete(r.id);
-          } catch (e) {}
-        }
-      } catch (e) {}
-
-      // Create new reminder 3 days before next due date
-      const reminderDate = new Date(nextDueDate);
-      reminderDate.setDate(reminderDate.getDate() - 3);
-      const reminderDateStr = reminderDate.toISOString().split('T')[0];
-      
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const reminderDateObj = new Date(reminderDateStr);
-      reminderDateObj.setHours(0, 0, 0, 0);
-      
-      if (reminderDateObj >= today) {
-        try {
-          // Get bill and biller info for the reminder message
-          const bill = await pb.collection('bills').getOne(billId);
-          const biller = await pb.collection('billers').getOne(billerId);
-          
-          const formattedAmount = new Intl.NumberFormat('en-GB', { 
-            style: 'currency', 
-            currency: 'GBP' 
-          }).format(bill.last_bill_amount || amount);
-          
-          await pb.collection('reminders').create({
-            biller_id: billerId,
-            reminder_date: reminderDateStr,
-            type: 'payment_due',
-            message: `${biller.name} - ${formattedAmount} due on ${new Date(nextDueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`,
-            status: 'pending',
-          });
-        } catch (e) {
-          console.log('⚠️ Could not create reminder:', e);
-        }
-      }
-    }
-
-    // ✅ FIX: Delete old pending reminders for this biller (even if not fully paid or not recurring)
-    // This ensures old reminders are cleaned up when a payment is made
-    try {
-      const oldReminders = await pb.collection('reminders').getFullList({
-        filter: `biller_id="${billerId}" && status="pending"`,
-      });
-      
-      for (const r of oldReminders) {
-        try {
-          await pb.collection('reminders').delete(r.id);
-        } catch (e) {}
-      }
-    } catch (e) {}
+    // 4. ✅ Sync reminders using ReminderService (optimized)
+    const reminderService = ReminderService.getInstance();
+    const bill = await pb.collection('billers').getOne(billerId);
+    
+    const reminderSync = await reminderService.syncRemindersForPayment({
+      billerId,
+      billId,
+      nextDueDate,
+      amount: amount,
+      billerName: bill.name,
+      isRecurring,
+      isFullyPaid,
+    });
 
     // 5. Build result message
     let message = '';
@@ -201,83 +141,26 @@ export async function recordSmartPayment({
       status = 'partial';
     }
 
-    return { 
-      success: true, 
-      message, 
-      isFullyPaid, 
-      nextDueDate, 
+    return {
+      success: true,
+      message,
+      isFullyPaid,
+      nextDueDate,
       remainingBalance,
       status,
       isRecurring,
+      reminderSync,
     };
   } catch (e) {
     console.error('Payment error:', e);
-    return { 
-      success: false, 
-      message: 'Payment failed', 
-      isFullyPaid: false, 
-      nextDueDate: null, 
+    return {
+      success: false,
+      message: 'Payment failed',
+      isFullyPaid: false,
+      nextDueDate: null,
       remainingBalance: currentBalance,
       status: 'partial',
       isRecurring: frequency !== 'one_off',
     };
   }
-}
-
-// Helper function to update a bill when a new bill arrives
-export async function updateBillWithNewAmount({
-  billId,
-  newAmount,
-  billDate,
-}: {
-  billId: string;
-  newAmount: number;
-  billDate?: string;
-}): Promise<{ success: boolean; message: string }> {
-  try {
-    const bill = await pb.collection('bills').getOne(billId);
-    const isRecurring = bill.frequency && bill.frequency !== 'one_off';
-    
-    if (!isRecurring) {
-      return { success: false, message: 'This is not a recurring bill' };
-    }
-
-    const updateData: Record<string, any> = {
-      current_balance: newAmount,
-      last_bill_amount: newAmount,
-    };
-    
-    if (billDate) {
-      updateData.last_bill_date = billDate;
-    }
-
-    await pb.collection('bills').update(billId, updateData);
-    
-    return { 
-      success: true, 
-      message: `✅ Bill updated with new amount: ${new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(newAmount)}` 
-    };
-  } catch (error) {
-    console.error('Update bill error:', error);
-    return { success: false, message: 'Failed to update bill' };
-  }
-}
-
-// Helper function to get bill status
-export function getBillStatus(bill: { 
-  current_balance: number; 
-  frequency: Frequency; 
-  next_bill_date?: string;
-  last_bill_amount?: number;
-}) {
-  const isPaid = bill.current_balance === 0;
-  const isRecurring = bill.frequency !== 'one_off';
-  const displayAmount = isPaid && isRecurring ? bill.last_bill_amount || 0 : bill.current_balance;
-  
-  return {
-    isPaid,
-    isRecurring,
-    displayAmount,
-    status: isPaid ? 'paid' : 'pending',
-  };
 }
